@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Alert, Button, Card, Col, Form, Input, Layout, List, Popconfirm, Row, Space, Spin, Statistic, Tag, Timeline, Typography, message } from 'antd'
+import { Alert, Button, Card, Col, Form, Input, Layout, List, Popconfirm, Row, Space, Spin, Statistic, Tag, Timeline, Typography, message, Tabs } from 'antd'
 import { ArrowRightOutlined, DeleteOutlined, FolderOpenOutlined, PlusOutlined } from '@ant-design/icons'
 import { useNavigate } from 'react-router-dom'
 
@@ -75,6 +75,14 @@ export function DashboardPage() {
     }
   }
 
+  const latestJob = summary?.recent_jobs?.[0] ?? null
+  const healthItems = health ? [
+    { key: 'api', label: 'API', status: health.api.status, detail: health.api.detail },
+    { key: 'sqlite', label: 'SQLite', status: health.sqlite.status, detail: health.sqlite.detail },
+    { key: 'storage', label: 'Storage', status: health.storage.status, detail: health.storage.detail },
+    { key: 'ollama', label: 'Ollama', status: health.ollama.status, detail: health.ollama.detail },
+  ] : []
+
   return (
     <Layout className="app-shell dashboard-shell">
       {contextHolder}
@@ -91,25 +99,86 @@ export function DashboardPage() {
           <div className="loading-state"><Spin size="large" /></div>
         ) : (
           <Space direction="vertical" size={20} className="content-stack">
-            <Row gutter={[20, 20]}>
-              <Col xs={24} xl={10}>
-                <Card className="hero-card">
+            <Row gutter={[20, 20]} className="dashboard-hero-grid">
+              <Col xs={24} xl={15}>
+                <Card className="hero-card dashboard-hero-main">
                   <Text className="brand-eyebrow">xtrain</Text>
                   <Title level={3}>网络安全日志分析工作台</Title>
                   <Paragraph>
-                    首页聚焦项目总览、系统状态和最近产物；导入、处理、训练与分析全部在项目工作区内完成。
+                    首页聚焦项目入口、系统状态和最近产物，真正的导入、处理、训练与异常分析都收敛在项目工作区里。
                   </Paragraph>
-                  <Space wrap>
+                  <div className="dashboard-chip-row">
                     <Tag color="blue">项目总览</Tag>
                     <Tag color="gold">分阶段工作区</Tag>
                     <Tag color="green">本地部署</Tag>
-                    <Tag color="magenta">Ollama 预留</Tag>
-                  </Space>
+                    <Tag color="magenta">AI 异常分析</Tag>
+                  </div>
+                  <div className="dashboard-hero-actions">
+                    <Button type="primary" icon={<PlusOutlined />} onClick={() => form.scrollToField('name')}>
+                      创建项目
+                    </Button>
+                    <Button
+                      icon={<ArrowRightOutlined />}
+                      disabled={!summary?.recent_projects.length}
+                      onClick={() => summary?.recent_projects[0] && navigate(`/projects/${summary.recent_projects[0].id}`)}
+                    >
+                      进入最近项目
+                    </Button>
+                  </div>
+                  <div className="dashboard-metric-strip">
+                    <div className="dashboard-metric-pill">
+                      <Text className="dashboard-metric-label">项目</Text>
+                      <Text strong>{summary?.project_count ?? 0}</Text>
+                    </div>
+                    <div className="dashboard-metric-pill">
+                      <Text className="dashboard-metric-label">数据集</Text>
+                      <Text strong>{summary?.dataset_count ?? 0}</Text>
+                    </div>
+                    <div className="dashboard-metric-pill">
+                      <Text className="dashboard-metric-label">模型</Text>
+                      <Text strong>{summary?.model_count ?? 0}</Text>
+                    </div>
+                    <div className="dashboard-metric-pill">
+                      <Text className="dashboard-metric-label">任务</Text>
+                      <Text strong>{summary?.job_count ?? 0}</Text>
+                    </div>
+                  </div>
                 </Card>
               </Col>
-              <Col xs={24} xl={14}>
-                <Card title="工作流概览" className="workflow-top-card">
-                  <WorkflowMap />
+              <Col xs={24} xl={9}>
+                <Card title="系统快照" className="dashboard-snapshot-card">
+                  <div className="dashboard-snapshot-stack">
+                    <div className="dashboard-health-grid">
+                      {healthItems.map((item) => (
+                        <div key={item.key} className="dashboard-health-chip">
+                          <Space size={8}>
+                            <Tag color={item.status === 'up' ? 'green' : item.status === 'down' ? 'red' : 'gold'}>
+                              {item.label}
+                            </Tag>
+                            <Text>{item.detail}</Text>
+                          </Space>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="dashboard-latest-job">
+                      <Text className="dashboard-latest-job-label">最新任务</Text>
+                      {latestJob ? (
+                        <div>
+                          <Space wrap>
+                            <Text strong>{latestJob.name}</Text>
+                            <Tag color={latestJob.status === 'completed' ? 'green' : latestJob.status === 'failed' ? 'red' : 'blue'}>
+                              {latestJob.status}
+                            </Tag>
+                          </Space>
+                          <Paragraph className="dashboard-latest-job-copy">
+                            {latestJob.message || `当前进度 ${latestJob.progress}%`}
+                          </Paragraph>
+                        </div>
+                      ) : (
+                        <Paragraph className="dashboard-latest-job-copy">当前还没有任务记录。</Paragraph>
+                      )}
+                    </div>
+                  </div>
                 </Card>
               </Col>
             </Row>
@@ -122,20 +191,23 @@ export function DashboardPage() {
             </Row>
 
             <Row gutter={[20, 20]}>
-              <Col xs={24} xl={14}>
-                <Card title="项目列表">
-                  <Form form={form} layout="vertical" onFinish={(values) => void handleCreateProject(values)}>
-                    <Row gutter={16}>
-                      <Col xs={24} md={10}><Form.Item label="项目名称" name="name" rules={[{ required: true, message: '请输入项目名称' }]}><Input /></Form.Item></Col>
-                      <Col xs={24} md={10}><Form.Item label="项目描述" name="description"><Input /></Form.Item></Col>
-                      <Col xs={24} md={4} className="form-action"><Button type="primary" htmlType="submit" block loading={submittingProject} icon={<PlusOutlined />}>创建</Button></Col>
-                    </Row>
-                  </Form>
+              <Col xs={24} xl={15}>
+                <Card title="项目入口" extra={<Text type="secondary">从这里进入各项目工作区</Text>}>
+                  <div className="dashboard-create-strip">
+                    <Form form={form} layout="vertical" onFinish={(values) => void handleCreateProject(values)}>
+                      <Row gutter={16}>
+                        <Col xs={24} md={10}><Form.Item label="项目名称" name="name" rules={[{ required: true, message: '请输入项目名称' }]}><Input placeholder="例如：NTA 异常识别" /></Form.Item></Col>
+                        <Col xs={24} md={10}><Form.Item label="项目描述" name="description"><Input placeholder="写下数据来源、目标或当前分析主题" /></Form.Item></Col>
+                        <Col xs={24} md={4} className="form-action"><Button type="primary" htmlType="submit" block loading={submittingProject} icon={<PlusOutlined />}>创建</Button></Col>
+                      </Row>
+                    </Form>
+                  </div>
                   <List
                     dataSource={summary?.recent_projects ?? []}
                     locale={{ emptyText: '暂无项目，请先创建一个。' }}
                     renderItem={(project) => (
                       <List.Item
+                        className="dashboard-project-row"
                         actions={[
                           <Button key="open" type="link" icon={<ArrowRightOutlined />} onClick={() => navigate(`/projects/${project.id}`)}>进入工作区</Button>,
                           <Popconfirm
@@ -154,61 +226,85 @@ export function DashboardPage() {
                       >
                         <List.Item.Meta
                           avatar={<FolderOpenOutlined className="dashboard-list-icon" />}
-                          title={<Space><Text strong>{project.name}</Text><Tag color="green">{project.status}</Tag></Space>}
-                          description={project.description || '未填写描述'}
+                          title={<Space wrap><Text strong>{project.name}</Text><Tag color="green">{project.status}</Tag></Space>}
+                          description={
+                            <div className="dashboard-project-meta">
+                              <Text>{project.description || '未填写描述'}</Text>
+                              <Text type="secondary">创建于 {formatDateTime(project.created_at)}</Text>
+                            </div>
+                          }
                         />
                       </List.Item>
                     )}
                   />
                 </Card>
               </Col>
-              <Col xs={24} xl={10}>
-                <Card title="系统健康检查">
-                  <Timeline
-                    items={health ? [
-                      { color: health.api.status === 'up' ? 'green' : 'red', children: `API: ${health.api.detail}` },
-                      { color: health.sqlite.status === 'up' ? 'green' : 'gold', children: `SQLite: ${health.sqlite.detail}` },
-                      { color: health.storage.status === 'up' ? 'green' : 'gold', children: `Storage: ${health.storage.detail}` },
-                      { color: health.ollama.status === 'up' ? 'green' : 'blue', children: `Ollama: ${health.ollama.detail}` },
-                    ] : []}
-                  />
-                </Card>
-                <Card title="最近任务" className="top-gap">
+              <Col xs={24} xl={9}>
+                <Card title="最近任务" className="dashboard-side-card">
                   <StatusTrendChart jobs={summary?.recent_jobs ?? []} />
+                </Card>
+                <Card title="工作流概览" className="workflow-top-card dashboard-side-card top-gap">
+                  <WorkflowMap />
                 </Card>
               </Col>
             </Row>
 
             <Row gutter={[20, 20]}>
-              <Col xs={24} xl={12}>
-                <Card title="最近数据集">
-                  <List
-                    dataSource={summary?.recent_datasets ?? []}
-                    locale={{ emptyText: '暂无数据集。' }}
-                    renderItem={(dataset) => (
-                      <List.Item actions={[<Button key="open" type="link" onClick={() => navigate(`/projects/${dataset.project_id}?tab=data`)}>查看项目</Button>]}>
-                        <List.Item.Meta
-                          title={<Space wrap><Text strong>{dataset.version_name}</Text><Tag color="blue">{dataset.parser_profile}</Tag></Space>}
-                          description={`项目 ${dataset.project_id}，共 ${dataset.row_count} 行`}
-                        />
-                      </List.Item>
-                    )}
-                  />
-                </Card>
-              </Col>
-              <Col xs={24} xl={12}>
-                <Card title="最近模型">
-                  <List
-                    dataSource={summary?.recent_models ?? []}
-                    locale={{ emptyText: '暂无模型版本。' }}
-                    renderItem={(model) => (
-                      <List.Item actions={[<Button key="open" type="link" onClick={() => navigate(`/projects/${model.project_id}?tab=training`)}>查看项目</Button>]}>
-                        <List.Item.Meta
-                          title={<Space wrap><Text strong>{model.name}</Text><Tag color={model.mode === 'supervised' ? 'green' : 'magenta'}>{model.mode}</Tag></Space>}
-                          description={`${model.algorithm} / ${model.status}`}
-                        />
-                      </List.Item>
-                    )}
+              <Col xs={24}>
+                <Card title="最近情报" extra={<Text type="secondary">快速回到最新数据与模型</Text>}>
+                  <Tabs
+                    items={[
+                      {
+                        key: 'datasets',
+                        label: '最近数据集',
+                        children: (
+                          <List
+                            className="dashboard-compact-list"
+                            dataSource={summary?.recent_datasets ?? []}
+                            locale={{ emptyText: '暂无数据集。' }}
+                            renderItem={(dataset) => (
+                              <List.Item actions={[<Button key="open" type="link" onClick={() => navigate(`/projects/${dataset.project_id}?tab=data`)}>查看项目</Button>]}>
+                                <List.Item.Meta
+                                  title={<Space wrap><Text strong>{dataset.version_name}</Text><Tag color="blue">{dataset.parser_profile}</Tag></Space>}
+                                  description={`项目 ${dataset.project_id} · ${dataset.row_count} 行 · ${formatDateTime(dataset.created_at)}`}
+                                />
+                              </List.Item>
+                            )}
+                          />
+                        ),
+                      },
+                      {
+                        key: 'models',
+                        label: '最近模型',
+                        children: (
+                          <List
+                            className="dashboard-compact-list"
+                            dataSource={summary?.recent_models ?? []}
+                            locale={{ emptyText: '暂无模型版本。' }}
+                            renderItem={(model) => (
+                              <List.Item actions={[<Button key="open" type="link" onClick={() => navigate(`/projects/${model.project_id}?tab=training`)}>查看项目</Button>]}>
+                                <List.Item.Meta
+                                  title={<Space wrap><Text strong>{model.name}</Text><Tag color={model.mode === 'supervised' ? 'green' : 'magenta'}>{model.mode}</Tag></Space>}
+                                  description={`${model.algorithm} · ${model.status} · ${formatDateTime(model.created_at)}`}
+                                />
+                              </List.Item>
+                            )}
+                          />
+                        ),
+                      },
+                      {
+                        key: 'health',
+                        label: '系统检查',
+                        children: (
+                          <Timeline
+                            items={healthItems.map((item) => ({
+                              color: item.status === 'up' ? 'green' : item.status === 'down' ? 'red' : 'gold',
+                              children: `${item.label}: ${item.detail}`,
+                            }))}
+                          />
+                        ),
+                      },
+                    ]}
                   />
                 </Card>
               </Col>
@@ -218,4 +314,18 @@ export function DashboardPage() {
       </Content>
     </Layout>
   )
+}
+
+function formatDateTime(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return value
+  }
+
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date)
 }

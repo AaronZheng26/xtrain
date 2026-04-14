@@ -7,7 +7,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.schemas.training import TrainingRequest
-from app.services.training import _select_training_feature_columns
+from app.services.training import _build_signal_summaries, _select_training_feature_columns
 
 
 class TrainingFeatureSelectionTests(unittest.TestCase):
@@ -104,6 +104,26 @@ class TrainingFeatureSelectionTests(unittest.TestCase):
         self.assertIn("raw_message_entropy", result["used_feature_columns"])
         self.assertIn("raw_message_length", result["used_feature_columns"])
         self.assertEqual(result["exclusion_reasons"]["raw_message"], "raw_text_column")
+
+    def test_signal_summaries_highlight_spike_and_count_features(self):
+        frame = pd.DataFrame(
+            {
+                "predicted_label": ["anomaly", "anomaly", "normal", "normal"],
+                "source_15m_spike": [1, 1, 0, 0],
+                "source_15m_count": [6, 4, 1, 2],
+                "pair_count": [3, 2, 1, 1],
+                "anomaly_score": [0.9, 0.8, 0.2, 0.1],
+            }
+        )
+
+        spike_summaries = _build_signal_summaries(frame, signal_type="spike_flag")
+        count_summaries = _build_signal_summaries(frame, signal_type="count_metric")
+
+        self.assertEqual(spike_summaries[0]["column"], "source_15m_spike")
+        self.assertEqual(spike_summaries[0]["anomaly_active_count"], 2)
+        self.assertEqual(spike_summaries[0]["normal_active_count"], 0)
+        self.assertEqual(count_summaries[0]["column"], "source_15m_count")
+        self.assertGreater(count_summaries[0]["anomaly_mean"], count_summaries[0]["normal_mean"])
 
 
 if __name__ == "__main__":

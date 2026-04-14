@@ -69,6 +69,10 @@
     linear-gradient(180deg, #071d2f 0%, #102a43 100%);
 }
 
+.dashboard-hero-main.ant-card {
+  overflow: hidden;
+}
+
 .hero-card .brand-eyebrow,
 .hero-card .ant-typography {
   color: #f4f8fb;
@@ -78,9 +82,88 @@
   color: #c5d3df;
 }
 
+.dashboard-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.dashboard-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.dashboard-metric-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 22px;
+}
+
+.dashboard-metric-pill {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(244, 248, 251, 0.08);
+  border: 1px solid rgba(244, 248, 251, 0.08);
+}
+
+.dashboard-metric-label {
+  color: #9fb3c8;
+  font-size: 12px;
+}
+
+.dashboard-snapshot-card.ant-card {
+  min-height: 100%;
+}
+
+.dashboard-snapshot-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.dashboard-health-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.dashboard-health-chip {
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: #f8fbfe;
+}
+
+.dashboard-latest-job {
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, rgba(22, 119, 255, 0.08), rgba(19, 194, 194, 0.08));
+}
+
+.dashboard-latest-job-label {
+  display: inline-block;
+  margin-bottom: 8px;
+  color: #6e859b;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.dashboard-latest-job-copy.ant-typography {
+  margin: 8px 0 0;
+}
+
 .workflow-top-card .react-flow__controls,
 .workflow-top-card .react-flow__minimap {
   opacity: 0.9;
+}
+
+.workflow-top-card .react-flow__attribution {
+  display: none;
 }
 
 .metric-card .ant-statistic {
@@ -94,6 +177,28 @@
 
 .top-gap {
   margin-top: 8px;
+}
+
+.dashboard-side-card .ant-card-body {
+  padding-top: 18px;
+}
+
+.dashboard-create-strip {
+  margin-bottom: 10px;
+}
+
+.dashboard-project-row {
+  padding-block: 16px;
+}
+
+.dashboard-project-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.dashboard-compact-list .ant-list-item {
+  padding-block: 14px;
 }
 
 .latest-job,
@@ -295,6 +400,16 @@
   }
 
   .step-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-metric-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 576px) {
+  .dashboard-metric-strip {
     grid-template-columns: 1fr;
   }
 }

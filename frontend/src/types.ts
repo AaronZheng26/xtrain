@@ -329,6 +329,19 @@ export type ModelAnalysisEmbeddingPoint = {
   actual_label: string | null
 }
 
+export type ModelAnalysisSignalSummary = {
+  column: string
+  signal_type: string
+  anomaly_mean: number | null
+  normal_mean: number | null
+  anomaly_max: number | null
+  normal_max: number | null
+  anomaly_active_count: number | null
+  normal_active_count: number | null
+  anomaly_active_rate: number | null
+  normal_active_rate: number | null
+}
+
 export type ModelAnalysisRead = {
   model_id: number
   mode: string
@@ -338,6 +351,8 @@ export type ModelAnalysisRead = {
   score_points: ModelAnalysisScorePoint[]
   score_histogram: ModelAnalysisHistogramBucket[]
   embedding_points: ModelAnalysisEmbeddingPoint[]
+  spike_signal_summaries: ModelAnalysisSignalSummary[]
+  count_signal_summaries: ModelAnalysisSignalSummary[]
 }
 
 export type LlmProviderConfig = {

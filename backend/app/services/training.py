@@ -41,6 +41,7 @@ LABEL_LIKE_COLUMNS = {
 RAW_TEXT_HINTS = ("message", "rawmessage", "useragent", "path", "url", "query", "payload", "stacktrace")
 IDENTIFIER_HINTS = ("uuid", "guid", "trace", "session", "request", "eventid")
 RESERVED_TRAINING_COLUMNS = {"predicted_label", "prediction_proba", "anomaly_score", "actual_label", "sample_index"}
+RESERVED_ANALYSIS_SIGNAL_COLUMNS = RESERVED_TRAINING_COLUMNS
 
 
 def create_model_version(db: Session, payload: TrainingRequest) -> ModelVersion:
@@ -198,6 +199,8 @@ def get_model_analysis(
         "score_points": _build_score_points(sampled),
         "score_histogram": _build_score_histogram(sampled, histogram_bins),
         "embedding_points": _build_embedding_points(sampled, model_version.feature_columns),
+        "spike_signal_summaries": _build_signal_summaries(frame, signal_type="spike_flag"),
+        "count_signal_summaries": _build_signal_summaries(frame, signal_type="count_metric"),
     }
 
 
@@ -697,3 +700,97 @@ def _build_embedding_points(frame: pd.DataFrame, feature_columns: list[str]) -> 
         )
 
     return points
+
+
+def _build_signal_summaries(
+    frame: pd.DataFrame,
+    signal_type: str,
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    if "predicted_label" not in frame.columns:
+        return []
+
+    anomaly_mask = frame["predicted_label"].astype(str) == "anomaly"
+    normal_mask = ~anomaly_mask
+    summaries: list[tuple[float, dict[str, Any]]] = []
+
+    for column in frame.columns:
+        classified_signal_type = _classify_signal_column(column)
+        if classified_signal_type != signal_type:
+            continue
+
+        series = pd.to_numeric(frame[column], errors="coerce")
+        if series.isna().all():
+            continue
+
+        anomaly_values = series.loc[anomaly_mask]
+        normal_values = series.loc[normal_mask]
+        if signal_type == "spike_flag":
+            summary = _build_spike_signal_summary(column, anomaly_values, normal_values)
+            score = summary["anomaly_active_rate"] or 0.0
+        else:
+            summary = _build_count_signal_summary(column, anomaly_values, normal_values)
+            score = summary["anomaly_mean"] or 0.0
+
+        summaries.append((float(score), summary))
+
+    summaries.sort(key=lambda item: item[0], reverse=True)
+    return [summary for _, summary in summaries[:limit]]
+
+
+def _classify_signal_column(column: str) -> str | None:
+    if column in RESERVED_ANALYSIS_SIGNAL_COLUMNS:
+        return None
+
+    normalized_name = _normalize_column_name(column)
+    if "spike" in normalized_name:
+        return "spike_flag"
+    if "count" in normalized_name:
+        return "count_metric"
+    return None
+
+
+def _build_spike_signal_summary(column: str, anomaly_values: pd.Series, normal_values: pd.Series) -> dict[str, Any]:
+    anomaly_active = anomaly_values.fillna(0) > 0
+    normal_active = normal_values.fillna(0) > 0
+    return {
+        "column": column,
+        "signal_type": "spike_flag",
+        "anomaly_mean": _rounded_or_none(anomaly_values.mean(skipna=True)),
+        "normal_mean": _rounded_or_none(normal_values.mean(skipna=True)),
+        "anomaly_max": _rounded_or_none(anomaly_values.max(skipna=True)),
+        "normal_max": _rounded_or_none(normal_values.max(skipna=True)),
+        "anomaly_active_count": int(anomaly_active.sum()),
+        "normal_active_count": int(normal_active.sum()),
+        "anomaly_active_rate": _safe_rate(anomaly_active),
+        "normal_active_rate": _safe_rate(normal_active),
+    }
+
+
+def _build_count_signal_summary(column: str, anomaly_values: pd.Series, normal_values: pd.Series) -> dict[str, Any]:
+    anomaly_active = anomaly_values.fillna(0) > 0
+    normal_active = normal_values.fillna(0) > 0
+    return {
+        "column": column,
+        "signal_type": "count_metric",
+        "anomaly_mean": _rounded_or_none(anomaly_values.mean(skipna=True)),
+        "normal_mean": _rounded_or_none(normal_values.mean(skipna=True)),
+        "anomaly_max": _rounded_or_none(anomaly_values.max(skipna=True)),
+        "normal_max": _rounded_or_none(normal_values.max(skipna=True)),
+        "anomaly_active_count": int(anomaly_active.sum()),
+        "normal_active_count": int(normal_active.sum()),
+        "anomaly_active_rate": _safe_rate(anomaly_active),
+        "normal_active_rate": _safe_rate(normal_active),
+    }
+
+
+def _rounded_or_none(value: Any) -> float | None:
+    if pd.isna(value):
+        return None
+    return round(float(value), 4)
+
+
+def _safe_rate(series: pd.Series) -> float | None:
+    if len(series.index) == 0:
+        return None
+    return round(float(series.mean()), 4)
