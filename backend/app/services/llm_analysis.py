@@ -219,49 +219,59 @@ async def _call_provider(config: LlmProviderConfig, prompt: str, api_key: str | 
     provider = config.provider.lower()
     timeout = httpx.Timeout(45.0, connect=10.0)
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        if provider == "ollama":
-            response = await client.post(
-                f"{config.base_url.rstrip('/')}/api/chat",
-                json={
-                    "model": config.model_name,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "stream": False,
-                    "options": {"temperature": 0.2},
-                },
-            )
-            if response.status_code >= 400:
-                raise HTTPException(status_code=502, detail=_provider_error("Ollama", response))
-            payload = response.json()
-            content = _extract_provider_content(provider, payload)
-            if not content["final_content"]:
-                raise HTTPException(status_code=502, detail="Ollama returned an empty analysis result")
-            return content
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            if provider == "ollama":
+                response = await client.post(
+                    f"{config.base_url.rstrip('/')}/api/chat",
+                    json={
+                        "model": config.model_name,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "stream": False,
+                        "options": {"temperature": 0.2},
+                    },
+                )
+                if response.status_code >= 400:
+                    raise HTTPException(status_code=502, detail=_provider_error("Ollama", response))
+                payload = _response_json_or_error("Ollama", response)
+                content = _extract_provider_content(provider, payload)
+                if not content["final_content"]:
+                    raise HTTPException(status_code=502, detail="Ollama returned an empty analysis result")
+                return content
 
-        if provider in {"openai_compatible", "minimax"}:
-            if provider == "minimax" and not api_key:
-                raise HTTPException(status_code=400, detail="MiniMax requires an API Key")
-            headers = {"Content-Type": "application/json"}
-            if api_key:
-                headers["Authorization"] = f"Bearer {api_key}"
-            response = await client.post(
-                f"{config.base_url.rstrip('/')}/chat/completions",
-                headers=headers,
-                json={
-                    "model": config.model_name,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.2,
-                    **({"reasoning_split": True} if provider == "minimax" else {}),
-                },
-            )
-            if response.status_code >= 400:
-                provider_name = "MiniMax" if provider == "minimax" else "OpenAI-compatible"
-                raise HTTPException(status_code=502, detail=_provider_error(provider_name, response))
-            payload = response.json()
-            content = _extract_provider_content(provider, payload)
-            if not content["final_content"]:
-                raise HTTPException(status_code=502, detail="Online model returned an empty analysis result")
-            return content
+            if provider in {"openai_compatible", "minimax"}:
+                if provider == "minimax" and not api_key:
+                    raise HTTPException(status_code=400, detail="MiniMax requires an API Key")
+                headers = {"Content-Type": "application/json"}
+                if api_key:
+                    headers["Authorization"] = f"Bearer {api_key}"
+                response = await client.post(
+                    f"{config.base_url.rstrip('/')}/chat/completions",
+                    headers=headers,
+                    json={
+                        "model": config.model_name,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": 0.2,
+                        **({"reasoning_split": True} if provider == "minimax" else {}),
+                    },
+                )
+                if response.status_code >= 400:
+                    provider_name = "MiniMax" if provider == "minimax" else "OpenAI-compatible"
+                    raise HTTPException(status_code=502, detail=_provider_error(provider_name, response))
+                payload = _response_json_or_error("MiniMax" if provider == "minimax" else "OpenAI-compatible", response)
+                content = _extract_provider_content(provider, payload)
+                if not content["final_content"]:
+                    raise HTTPException(status_code=502, detail="Online model returned an empty analysis result")
+                return content
+    except HTTPException:
+        raise
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail=f"{_provider_display_name(provider)} request timed out") from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"{_provider_display_name(provider)} request failed: {exc}",
+        ) from exc
 
     raise HTTPException(status_code=400, detail=f"Unsupported provider: {provider}")
 
@@ -270,39 +280,51 @@ async def _test_provider_connection(provider: str, base_url: str, model_name: st
     timeout = httpx.Timeout(25.0, connect=10.0)
     prompt = "Reply with exactly OK."
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        if provider == "ollama":
-            response = await client.post(
-                f"{base_url.rstrip('/')}/api/chat",
-                json={
-                    "model": model_name,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "stream": False,
-                    "options": {"temperature": 0.1},
-                },
-            )
-            if response.status_code >= 400:
-                raise HTTPException(status_code=502, detail=_provider_error("Ollama", response))
-            return
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            if provider == "ollama":
+                response = await client.post(
+                    f"{base_url.rstrip('/')}/api/chat",
+                    json={
+                        "model": model_name,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "stream": False,
+                        "options": {"temperature": 0.1},
+                    },
+                )
+                if response.status_code >= 400:
+                    raise HTTPException(status_code=502, detail=_provider_error("Ollama", response))
+                _response_json_or_error("Ollama", response)
+                return
 
-        if provider in {"openai_compatible", "minimax"}:
-            headers = {"Content-Type": "application/json"}
-            if api_key:
-                headers["Authorization"] = f"Bearer {api_key}"
-            response = await client.post(
-                f"{base_url.rstrip('/')}/chat/completions",
-                headers=headers,
-                json={
-                    "model": model_name,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.1,
-                    "max_tokens": 8,
-                },
-            )
-            if response.status_code >= 400:
-                provider_name = "MiniMax" if provider == "minimax" else "OpenAI-compatible"
-                raise HTTPException(status_code=502, detail=_provider_error(provider_name, response))
-            return
+            if provider in {"openai_compatible", "minimax"}:
+                headers = {"Content-Type": "application/json"}
+                if api_key:
+                    headers["Authorization"] = f"Bearer {api_key}"
+                response = await client.post(
+                    f"{base_url.rstrip('/')}/chat/completions",
+                    headers=headers,
+                    json={
+                        "model": model_name,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": 0.1,
+                        "max_tokens": 8,
+                    },
+                )
+                if response.status_code >= 400:
+                    provider_name = "MiniMax" if provider == "minimax" else "OpenAI-compatible"
+                    raise HTTPException(status_code=502, detail=_provider_error(provider_name, response))
+                _response_json_or_error("MiniMax" if provider == "minimax" else "OpenAI-compatible", response)
+                return
+    except HTTPException:
+        raise
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail=f"{_provider_display_name(provider)} request timed out") from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"{_provider_display_name(provider)} request failed: {exc}",
+        ) from exc
 
 
 def _provider_error(provider_name: str, response: httpx.Response) -> str:
@@ -311,6 +333,29 @@ def _provider_error(provider_name: str, response: httpx.Response) -> str:
     except Exception:
         payload = response.text
     return f"{provider_name} request failed with status {response.status_code}: {payload}"
+
+
+def _response_json_or_error(provider_name: str, response: httpx.Response) -> dict[str, Any]:
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"{provider_name} returned a non-JSON response: {response.text[:300]}",
+        ) from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=502, detail=f"{provider_name} returned an unexpected response shape")
+    return payload
+
+
+def _provider_display_name(provider: str) -> str:
+    if provider == "ollama":
+        return "Ollama"
+    if provider == "minimax":
+        return "MiniMax"
+    if provider == "openai_compatible":
+        return "OpenAI-compatible"
+    return provider
 
 
 def _mask_api_key(api_key: str | None) -> str | None:

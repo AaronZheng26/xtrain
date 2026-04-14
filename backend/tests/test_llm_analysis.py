@@ -2,8 +2,10 @@ import os
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
+import httpx
+from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -14,7 +16,13 @@ from app.db.base import Base
 from app.models.llm_provider_config import LlmProviderConfig
 from app.models.project import Project
 from app.schemas.analysis import LlmProviderConfigUpdate
-from app.services.llm_analysis import VOLATILE_API_KEYS, serialize_llm_config, update_llm_config
+from app.services.llm_analysis import (
+    VOLATILE_API_KEYS,
+    _call_provider,
+    _test_provider_connection,
+    serialize_llm_config,
+    update_llm_config,
+)
 
 
 class LlmConfigTests(unittest.TestCase):
@@ -85,6 +93,36 @@ class LlmConfigTests(unittest.TestCase):
 
             self.assertTrue(serialized["has_api_key"])
             self.assertEqual(serialized["api_key_hint"], "sk-l...ache")
+
+
+class LlmTransportErrorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_call_provider_converts_request_error_to_http_exception(self):
+        config = LlmProviderConfig(
+            project_id=1,
+            provider="minimax",
+            enabled=True,
+            base_url="https://api.minimaxi.com/v1",
+            model_name="MiniMax-M2.5",
+            api_key="sk-m...1234",
+        )
+        request = httpx.Request("POST", "https://api.minimaxi.com/v1/chat/completions")
+
+        with patch("app.services.llm_analysis.httpx.AsyncClient.post", new=AsyncMock(side_effect=httpx.ConnectError("boom", request=request))):
+            with self.assertRaises(HTTPException) as context:
+                await _call_provider(config, "hello", "sk-runtime")
+
+        self.assertEqual(context.exception.status_code, 502)
+        self.assertIn("MiniMax request failed", context.exception.detail)
+
+    async def test_test_provider_connection_converts_timeout_to_gateway_timeout(self):
+        request = httpx.Request("POST", "http://127.0.0.1:11434/api/chat")
+
+        with patch("app.services.llm_analysis.httpx.AsyncClient.post", new=AsyncMock(side_effect=httpx.ReadTimeout("slow", request=request))):
+            with self.assertRaises(HTTPException) as context:
+                await _test_provider_connection("ollama", "http://127.0.0.1:11434", "qwen2.5:7b", None)
+
+        self.assertEqual(context.exception.status_code, 504)
+        self.assertIn("Ollama request timed out", context.exception.detail)
 
 
 if __name__ == "__main__":
