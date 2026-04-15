@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Alert,
   Button,
@@ -93,10 +93,10 @@ type Props = {
   advisorLoading: boolean
   sampledAdvisorRun: PreprocessTrainingAdvisorRunRead | null
   sampledAdvisorLoading: boolean
-  onRun: (values: PreprocessFormValues) => void
-  onPreviewStep: (stepIndex: number, values: PreprocessFormValues) => void
-  onAnalyzeAdvisor: (values: PreprocessFormValues) => void
-  onRunSampledAdvisor: (values: PreprocessFormValues) => void
+  onRun: (values: PreprocessFormValues) => void | Promise<void>
+  onPreviewStep: (stepIndex: number, values: PreprocessFormValues) => void | Promise<void>
+  onAnalyzeAdvisor: (values: PreprocessFormValues) => void | Promise<void>
+  onRunSampledAdvisor: (values: PreprocessFormValues) => void | Promise<void>
   onSelectPipeline: (pipelineId: number) => void
 }
 
@@ -116,6 +116,7 @@ export function PreprocessTab(props: Props) {
   const [form] = Form.useForm<PreprocessFormValues>()
   const watchedValues = Form.useWatch([], form)
   const [pendingRecommendedSteps, setPendingRecommendedSteps] = useState<RecommendedPreprocessStepDraft[]>([])
+  const lastAdvisorRequestKeyRef = useRef('')
 
   useEffect(() => {
     if (props.dataset) {
@@ -129,6 +130,13 @@ export function PreprocessTab(props: Props) {
   }, [props.dataset, props.pipelines.length, form])
 
   const draftSteps = watchedValues?.steps ?? []
+  const advisorRequestKey = props.dataset
+    ? JSON.stringify({
+      datasetId: props.dataset.id,
+      pipelineCount: props.pipelines.length,
+      steps: draftSteps,
+    })
+    : ''
 
   function queueRecommendedStep(recommendation: RecommendedPreprocessStepDraft) {
     setPendingRecommendedSteps((current) => (
@@ -154,16 +162,21 @@ export function PreprocessTab(props: Props) {
 
   useEffect(() => {
     if (!props.dataset) {
+      lastAdvisorRequestKeyRef.current = ''
       const timer = window.setTimeout(() => {
         setPendingRecommendedSteps([])
       }, 0)
       return () => window.clearTimeout(timer)
     }
+    if (advisorRequestKey === lastAdvisorRequestKeyRef.current) {
+      return
+    }
     const timer = window.setTimeout(() => {
+      lastAdvisorRequestKeyRef.current = advisorRequestKey
       props.onAnalyzeAdvisor(form.getFieldsValue(true))
     }, 500)
     return () => window.clearTimeout(timer)
-  }, [draftSteps, form, props.dataset, props.onAnalyzeAdvisor])
+  }, [advisorRequestKey, form, props.dataset, props.onAnalyzeAdvisor])
 
   return (
     <StageLayout
