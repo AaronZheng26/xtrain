@@ -214,6 +214,7 @@ export function ProjectWorkspacePage() {
   const [preprocessStepPreview, setPreprocessStepPreview] = useState<PreprocessStepPreviewRead | null>(null)
   const [preprocessAdvisor, setPreprocessAdvisor] = useState<PreprocessTrainingAdvisorRead | null>(null)
   const [sampledAdvisorRun, setSampledAdvisorRun] = useState<PreprocessTrainingAdvisorRunRead | null>(null)
+  const [activeSampledAdvisorRunId, setActiveSampledAdvisorRunId] = useState<number | null>(null)
   const [featurePipelines, setFeaturePipelines] = useState<FeaturePipeline[]>([])
   const [featurePreview, setFeaturePreview] = useState<FeaturePreviewRead | null>(null)
   const [featureTemplates, setFeatureTemplates] = useState<FeatureTemplate[]>([])
@@ -278,6 +279,7 @@ export function ProjectWorkspacePage() {
     setPreprocessStepPreview(null)
     setPreprocessAdvisor(null)
     setSampledAdvisorRun(null)
+    setActiveSampledAdvisorRunId(null)
     setPreprocessAdvisorLoading(false)
     setSampledAdvisorLoading(false)
     setFeaturePipelines([])
@@ -468,9 +470,66 @@ export function ProjectWorkspacePage() {
     setPreprocessStepPreview(null)
     setPreprocessAdvisor(null)
     setSampledAdvisorRun(null)
+    setActiveSampledAdvisorRunId(null)
     setPreprocessAdvisorLoading(false)
     setSampledAdvisorLoading(false)
   }, [selectedDatasetId])
+
+  useEffect(() => {
+    if (!activeSampledAdvisorRunId || !sampledAdvisorLoading || backendStatus !== 'online') {
+      return
+    }
+    const advisorRunId = activeSampledAdvisorRunId
+
+    let cancelled = false
+
+    async function pollAdvisorRun() {
+      try {
+        const run = await loadPreprocessAdvisorRun(advisorRunId)
+        if (cancelled) return
+
+        if (run.status === 'completed') {
+          setSampledAdvisorLoading(false)
+          setActiveSampledAdvisorRunId(null)
+          setPendingWorkspaceJobs((current) => current.filter((item) => item.resourceId !== advisorRunId))
+          await loadJobs()
+          messageApi.success('采样训练适配分析已完成。')
+          return
+        }
+
+        if (run.status === 'failed') {
+          setSampledAdvisorLoading(false)
+          setActiveSampledAdvisorRunId(null)
+          setPendingWorkspaceJobs((current) => current.filter((item) => item.resourceId !== advisorRunId))
+          await loadJobs()
+          const failureMessage = '采样训练适配分析执行失败，请检查后端日志。'
+          setErrorMessage(failureMessage)
+          messageApi.error(failureMessage)
+          return
+        }
+      } catch (error) {
+        if (cancelled) return
+        const failureMessage = extractApiErrorMessage(error, '加载采样训练适配分析状态失败。')
+        setSampledAdvisorLoading(false)
+        setActiveSampledAdvisorRunId(null)
+        setErrorMessage(failureMessage)
+        messageApi.error(failureMessage)
+        return
+      }
+
+      if (!cancelled) {
+        window.setTimeout(() => {
+          if (!cancelled) void pollAdvisorRun()
+        }, 2000)
+      }
+    }
+
+    void pollAdvisorRun()
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeSampledAdvisorRunId, backendStatus, loadJobs, loadPreprocessAdvisorRun, messageApi, sampledAdvisorLoading])
 
   useEffect(() => {
     if (backendStatus === 'online' && activeTab === 'feature' && selectedFeaturePipelineId && selectedFeaturePipeline?.status === 'completed' && selectedFeaturePipeline.output_path) {
@@ -577,6 +636,7 @@ export function ProjectWorkspacePage() {
           setSelectedModelId(settled.resourceId)
         } else if (settled.kind === 'advisor') {
           setSampledAdvisorLoading(false)
+          setActiveSampledAdvisorRunId(null)
           if (settled.job.status === 'completed') {
             try {
               await loadPreprocessAdvisorRun(settled.resourceId)
@@ -813,6 +873,7 @@ export function ProjectWorkspacePage() {
   const handleRunSampledPreprocessAdvisor = useCallback(async (values: PreprocessFormValues) => {
     if (!project || !selectedDatasetId) return
     setSampledAdvisorLoading(true)
+    setSampledAdvisorRun(null)
     try {
       const response = await api.post<JobSubmissionRead>('/pipelines/preprocess/training-advisor/sample', {
         project_id: project.id,
@@ -821,6 +882,7 @@ export function ProjectWorkspacePage() {
         target_column: selectedDataset?.label_column ?? null,
         sample_limit: 2000,
       })
+      setActiveSampledAdvisorRunId(response.data.resource_id)
       setPendingWorkspaceJobs((current) => [...current, {
         jobId: response.data.job.id,
         kind: 'advisor',
@@ -831,6 +893,7 @@ export function ProjectWorkspacePage() {
       messageApi.success('采样训练适配分析已提交，完成后会自动刷新结果。')
     } catch (error) {
       setSampledAdvisorLoading(false)
+      setActiveSampledAdvisorRunId(null)
       setErrorMessage(extractApiErrorMessage(error, '提交采样训练适配分析失败，请检查当前步骤链。'))
     }
   }, [handleTabChange, messageApi, project, selectedDataset?.label_column, selectedDatasetId])
