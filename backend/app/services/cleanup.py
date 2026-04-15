@@ -20,6 +20,8 @@ from app.models.model_version import ModelVersion
 from app.models.preprocess_pipeline import PreprocessPipeline
 from app.models.project import Project
 
+STAGING_PATH_KEY = "_staging_path"
+
 
 def delete_project_with_assets(db: Session, project_id: int) -> None:
     project = db.get(Project, project_id)
@@ -38,6 +40,7 @@ def delete_project_with_assets(db: Session, project_id: int) -> None:
 
     import_sessions = list(db.scalars(select(ImportSession).where(ImportSession.project_id == project_id)))
     for import_session in import_sessions:
+        _remove_import_session_assets(import_session)
         db.delete(import_session)
 
     feature_templates = list(db.scalars(select(FeatureTemplate).where(FeatureTemplate.project_id == project_id)))
@@ -126,6 +129,14 @@ def _remove_record_file(path_value: str | None) -> None:
     settings = get_settings()
     storage_root = settings.storage_root_path
     _remove_path(settings.resolve_storage_path(path_value), storage_root)
+
+
+def _remove_import_session_assets(import_session: ImportSession) -> None:
+    if not isinstance(import_session.parse_options, dict):
+        return
+    staging_path = import_session.parse_options.get(STAGING_PATH_KEY)
+    if staging_path:
+        _remove_record_file(str(staging_path))
 
 
 def _remove_path(path: Path, storage_root: Path) -> None:

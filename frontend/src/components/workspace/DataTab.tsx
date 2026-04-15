@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Alert, Button, Card, Col, Descriptions, Empty, Input, List, Popconfirm, Row, Select, Space, Table, Tag, Typography, Upload } from 'antd'
 import type { FormInstance } from 'antd'
 import type { UploadFile } from 'antd/es/upload/interface'
@@ -25,6 +26,7 @@ type Props = {
   savingMapping: boolean
   importSession: ImportSession | null
   creatingImportSession: boolean
+  applyingImportCleaning: boolean
   confirmingImportSession: boolean
   deletingDatasetId: number | null
   mappingForm: FormInstance<Record<string, string | undefined>>
@@ -58,6 +60,7 @@ export function DataTab(props: Props) {
   const includeColumns = Array.isArray(cleaningOptions.include_columns) ? cleaningOptions.include_columns as string[] : []
   const excludeColumns = Array.isArray(cleaningOptions.exclude_columns) ? cleaningOptions.exclude_columns as string[] : []
   const renameColumns = isRecord(cleaningOptions.rename_columns) ? cleaningOptions.rename_columns : {}
+  const cleaningDraftKey = `${props.importSession?.id ?? 'none'}:${JSON.stringify(cleaningOptions)}`
 
   return (
     <StageLayout
@@ -113,47 +116,15 @@ export function DataTab(props: Props) {
                       ))}
                     </Space>
                     <Card size="small" title="导入清洗" className="nested-card">
-                      <Space direction="vertical" size={12} className="full-width">
-                        <div>
-                          <Text type="secondary">保留字段</Text>
-                          <Select
-                            mode="multiple"
-                            allowClear
-                            className="full-width top-gap"
-                            value={includeColumns}
-                            options={importColumns.map(toOption)}
-                            placeholder="为空表示保留所有字段"
-                            onChange={(columns) => props.onApplyImportCleaning({ include_columns: columns, exclude_columns: excludeColumns, rename_columns: renameColumns })}
-                          />
-                        </div>
-                        <div>
-                          <Text type="secondary">剔除字段</Text>
-                          <Select
-                            mode="multiple"
-                            allowClear
-                            className="full-width top-gap"
-                            value={excludeColumns}
-                            options={importColumns.map(toOption)}
-                            placeholder="选择不需要导入的字段"
-                            onChange={(columns) => props.onApplyImportCleaning({ include_columns: includeColumns, exclude_columns: columns, rename_columns: renameColumns })}
-                          />
-                        </div>
-                        <div>
-                          <Text type="secondary">重命名字段 JSON</Text>
-                          <Input.TextArea
-                            rows={3}
-                            className="top-gap"
-                            defaultValue={JSON.stringify(renameColumns, null, 2)}
-                            placeholder='例如 {"remote_addr":"source_ip","message":"raw_message"}'
-                            onBlur={(event) => {
-                              const parsed = parseRenameJson(event.target.value)
-                              if (parsed) {
-                                props.onApplyImportCleaning({ include_columns: includeColumns, exclude_columns: excludeColumns, rename_columns: parsed })
-                              }
-                            }}
-                          />
-                        </div>
-                      </Space>
+                      <ImportCleaningEditor
+                        key={cleaningDraftKey}
+                        includeColumns={includeColumns}
+                        excludeColumns={excludeColumns}
+                        renameColumns={renameColumns}
+                        importColumns={importColumns}
+                        applying={props.applyingImportCleaning}
+                        onApply={props.onApplyImportCleaning}
+                      />
                     </Card>
                     <Table<Record<string, unknown>>
                       rowKey={(_, index) => `import-preview-${index}`}
@@ -280,6 +251,96 @@ export function DataTab(props: Props) {
 
 function toOption(column: string) {
   return { label: column, value: column }
+}
+
+type ImportCleaningEditorProps = {
+  includeColumns: string[]
+  excludeColumns: string[]
+  renameColumns: Record<string, string>
+  importColumns: string[]
+  applying: boolean
+  onApply: (options: { include_columns?: string[]; exclude_columns?: string[]; rename_columns?: Record<string, string> }) => void
+}
+
+function ImportCleaningEditor(props: ImportCleaningEditorProps) {
+  const [draftIncludeColumns, setDraftIncludeColumns] = useState<string[]>(props.includeColumns)
+  const [draftExcludeColumns, setDraftExcludeColumns] = useState<string[]>(props.excludeColumns)
+  const [renameText, setRenameText] = useState(JSON.stringify(props.renameColumns, null, 2))
+  const [renameError, setRenameError] = useState<string | null>(null)
+
+  function handleApplyCleaningDraft() {
+    const parsed = parseRenameJson(renameText)
+    if (parsed === null) {
+      setRenameError('字段重命名 JSON 不合法，请检查格式。')
+      return
+    }
+    setRenameError(null)
+    props.onApply({
+      include_columns: draftIncludeColumns,
+      exclude_columns: draftExcludeColumns,
+      rename_columns: parsed,
+    })
+  }
+
+  function handleResetCleaningDraft() {
+    setDraftIncludeColumns(props.includeColumns)
+    setDraftExcludeColumns(props.excludeColumns)
+    setRenameText(JSON.stringify(props.renameColumns, null, 2))
+    setRenameError(null)
+  }
+
+  return (
+    <Space direction="vertical" size={12} className="full-width">
+      <Alert
+        type="info"
+        showIcon
+        message="大数据集建议先完成字段选择和重命名草稿，再统一点击“应用清洗”。这样可以减少频繁的后端重算。"
+      />
+      <div>
+        <Text type="secondary">保留字段</Text>
+        <Select
+          mode="multiple"
+          allowClear
+          className="full-width top-gap"
+          value={draftIncludeColumns}
+          options={props.importColumns.map(toOption)}
+          placeholder="为空表示保留所有字段"
+          onChange={(columns) => setDraftIncludeColumns(columns)}
+        />
+      </div>
+      <div>
+        <Text type="secondary">剔除字段</Text>
+        <Select
+          mode="multiple"
+          allowClear
+          className="full-width top-gap"
+          value={draftExcludeColumns}
+          options={props.importColumns.map(toOption)}
+          placeholder="选择不需要导入的字段"
+          onChange={(columns) => setDraftExcludeColumns(columns)}
+        />
+      </div>
+      <div>
+        <Text type="secondary">重命名字段 JSON</Text>
+        <Input.TextArea
+          rows={3}
+          className="top-gap"
+          value={renameText}
+          placeholder='例如 {"remote_addr":"source_ip","message":"raw_message"}'
+          onChange={(event) => setRenameText(event.target.value)}
+        />
+        {renameError ? <Text type="danger">{renameError}</Text> : null}
+      </div>
+      <Space>
+        <Button type="primary" loading={props.applying} onClick={handleApplyCleaningDraft}>
+          应用清洗
+        </Button>
+        <Button onClick={handleResetCleaningDraft} disabled={props.applying}>
+          重置草稿
+        </Button>
+      </Space>
+    </Space>
+  )
 }
 
 function isRecord(value: unknown): value is Record<string, string> {
