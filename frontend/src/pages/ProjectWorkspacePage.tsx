@@ -37,6 +37,8 @@ import type {
   PreprocessPipeline,
   PreprocessPreviewRead,
   PreprocessStepPreviewRead,
+  PreprocessTrainingAdvisorRead,
+  PreprocessTrainingAdvisorRunRead,
   Project,
   WorkspaceTabKey,
 } from '../types'
@@ -56,9 +58,34 @@ const IMPORT_REQUEST_TIMEOUT_MS = 120000
 
 type PendingWorkspaceJob = {
   jobId: number
-  kind: 'preprocess' | 'feature' | 'training'
+  kind: 'preprocess' | 'feature' | 'training' | 'advisor'
   resourceId: number
   tab: WorkspaceTabKey
+}
+
+function normalizePreprocessSteps(steps: PreprocessFormValues['steps']) {
+  return (steps ?? []).map((step) => {
+    const rawColumns = step.input_selector?.columns
+    const normalizedColumns = Array.isArray(rawColumns) ? rawColumns : rawColumns ? [rawColumns as unknown as string] : []
+    const normalizedParams = { ...step.params } as Record<string, unknown>
+
+    if (step.step_type === 'rename_columns' && typeof step.params.rename_map === 'string' && step.params.rename_map.trim()) {
+      try {
+        normalizedParams.rename_map = JSON.parse(step.params.rename_map)
+      } catch {
+        throw new Error('字段重命名映射必须是合法 JSON，例如 {"message":"raw_message"}')
+      }
+    }
+
+    return {
+      ...step,
+      input_selector: {
+        ...step.input_selector,
+        columns: normalizedColumns,
+      },
+      params: normalizedParams,
+    }
+  })
 }
 
 function normalizeFeatureSteps(steps: FeatureFormValues['steps']) {
@@ -185,6 +212,8 @@ export function ProjectWorkspacePage() {
   const [pipelines, setPipelines] = useState<PreprocessPipeline[]>([])
   const [pipelinePreview, setPipelinePreview] = useState<PreprocessPreviewRead | null>(null)
   const [preprocessStepPreview, setPreprocessStepPreview] = useState<PreprocessStepPreviewRead | null>(null)
+  const [preprocessAdvisor, setPreprocessAdvisor] = useState<PreprocessTrainingAdvisorRead | null>(null)
+  const [sampledAdvisorRun, setSampledAdvisorRun] = useState<PreprocessTrainingAdvisorRunRead | null>(null)
   const [featurePipelines, setFeaturePipelines] = useState<FeaturePipeline[]>([])
   const [featurePreview, setFeaturePreview] = useState<FeaturePreviewRead | null>(null)
   const [featureTemplates, setFeatureTemplates] = useState<FeatureTemplate[]>([])
@@ -204,6 +233,8 @@ export function ProjectWorkspacePage() {
   const [workspaceLoading, setWorkspaceLoading] = useState(false)
   const [pipelinePreviewLoading, setPipelinePreviewLoading] = useState(false)
   const [preprocessStepPreviewLoading, setPreprocessStepPreviewLoading] = useState(false)
+  const [preprocessAdvisorLoading, setPreprocessAdvisorLoading] = useState(false)
+  const [sampledAdvisorLoading, setSampledAdvisorLoading] = useState(false)
   const [featurePreviewLoading, setFeaturePreviewLoading] = useState(false)
   const [featureTemplatesLoading, setFeatureTemplatesLoading] = useState(false)
   const [featureStepPreviewLoading, setFeatureStepPreviewLoading] = useState(false)
@@ -245,6 +276,10 @@ export function ProjectWorkspacePage() {
     setPipelines([])
     setPipelinePreview(null)
     setPreprocessStepPreview(null)
+    setPreprocessAdvisor(null)
+    setSampledAdvisorRun(null)
+    setPreprocessAdvisorLoading(false)
+    setSampledAdvisorLoading(false)
     setFeaturePipelines([])
     setFeaturePreview(null)
     setFeatureTemplates([])
@@ -321,6 +356,15 @@ export function ProjectWorkspacePage() {
     } finally {
       setPipelinePreviewLoading(false)
     }
+  }, [])
+
+  const loadPreprocessAdvisorRun = useCallback(async (advisorRunId: number) => {
+    const response = await api.get<PreprocessTrainingAdvisorRunRead>(`/pipelines/preprocess/training-advisor/runs/${advisorRunId}`)
+    setSampledAdvisorRun(response.data)
+    if (response.data.result) {
+      setPreprocessAdvisor(response.data.result)
+    }
+    return response.data
   }, [])
 
   const loadFeaturePreview = useCallback(async (pipelineId: number) => {
@@ -422,6 +466,10 @@ export function ProjectWorkspacePage() {
 
   useEffect(() => {
     setPreprocessStepPreview(null)
+    setPreprocessAdvisor(null)
+    setSampledAdvisorRun(null)
+    setPreprocessAdvisorLoading(false)
+    setSampledAdvisorLoading(false)
   }, [selectedDatasetId])
 
   useEffect(() => {
@@ -511,7 +559,12 @@ export function ProjectWorkspacePage() {
 
     async function syncWorkspaceAfterJobs() {
       setPendingWorkspaceJobs((current) => current.filter((pendingJob) => !settledJobs.some((settled) => settled.jobId === pendingJob.jobId)))
-      await Promise.all([loadDatasetWorkspace(datasetId), loadJobs()])
+      const needsWorkspaceRefresh = settledJobs.some((settled) => settled.kind !== 'advisor')
+      if (needsWorkspaceRefresh) {
+        await Promise.all([loadDatasetWorkspace(datasetId), loadJobs()])
+      } else {
+        await loadJobs()
+      }
       if (cancelled) return
 
       for (const settled of settledJobs) {
@@ -522,6 +575,18 @@ export function ProjectWorkspacePage() {
           setSelectedFeaturePipelineId(settled.resourceId)
         } else if (settled.kind === 'training') {
           setSelectedModelId(settled.resourceId)
+        } else if (settled.kind === 'advisor') {
+          setSampledAdvisorLoading(false)
+          if (settled.job.status === 'completed') {
+            try {
+              await loadPreprocessAdvisorRun(settled.resourceId)
+            } catch (error) {
+              const failureMessage = extractApiErrorMessage(error, '加载采样训练适配分析结果失败。')
+              setErrorMessage(failureMessage)
+              messageApi.error(failureMessage)
+              continue
+            }
+          }
         }
 
         handleTabChange(settled.tab)
@@ -541,7 +606,7 @@ export function ProjectWorkspacePage() {
     return () => {
       cancelled = true
     }
-  }, [handleTabChange, jobs, loadDatasetWorkspace, loadJobs, messageApi, pendingWorkspaceJobs, selectedDatasetId])
+  }, [handleTabChange, jobs, loadDatasetWorkspace, loadJobs, loadPreprocessAdvisorRun, messageApi, pendingWorkspaceJobs, selectedDatasetId])
 
   async function handleCreateImportSession() {
     if (!project) return
@@ -689,28 +754,7 @@ export function ProjectWorkspacePage() {
     if (!project || !selectedDatasetId) return
     setRunningPreprocess(true)
     try {
-      const steps = (values.steps ?? []).map((step) => {
-        const rawColumns = step.input_selector?.columns
-        const normalizedColumns = Array.isArray(rawColumns) ? rawColumns : rawColumns ? [rawColumns as unknown as string] : []
-        const normalizedParams = { ...step.params } as Record<string, unknown>
-
-        if (step.step_type === 'rename_columns' && typeof step.params.rename_map === 'string' && step.params.rename_map.trim()) {
-          try {
-            normalizedParams.rename_map = JSON.parse(step.params.rename_map)
-          } catch {
-            throw new Error('字段重命名映射必须是合法 JSON，例如 {"message":"raw_message"}')
-          }
-        }
-
-        return {
-          ...step,
-          input_selector: {
-            ...step.input_selector,
-            columns: normalizedColumns,
-          },
-          params: normalizedParams,
-        }
-      })
+      const steps = normalizePreprocessSteps(values.steps ?? [])
 
       const response = await api.post<JobSubmissionRead>('/pipelines/preprocess', { project_id: project.id, dataset_version_id: selectedDatasetId, name: values.name, steps })
       await Promise.all([loadDatasetWorkspace(selectedDatasetId), loadJobs()])
@@ -729,24 +773,7 @@ export function ProjectWorkspacePage() {
     if (!project || !selectedDatasetId) return
     setPreprocessStepPreviewLoading(true)
     try {
-      const steps = (values.steps ?? []).map((step) => {
-        const rawColumns = step.input_selector?.columns
-        const normalizedColumns = Array.isArray(rawColumns) ? rawColumns : rawColumns ? [rawColumns as unknown as string] : []
-        const normalizedParams = { ...step.params } as Record<string, unknown>
-
-        if (step.step_type === 'rename_columns' && typeof step.params.rename_map === 'string' && step.params.rename_map.trim()) {
-          normalizedParams.rename_map = JSON.parse(step.params.rename_map)
-        }
-
-        return {
-          ...step,
-          input_selector: {
-            ...step.input_selector,
-            columns: normalizedColumns,
-          },
-          params: normalizedParams,
-        }
-      })
+      const steps = normalizePreprocessSteps(values.steps ?? [])
 
       const response = await api.post<PreprocessStepPreviewRead>('/pipelines/preprocess/step-preview', {
         project_id: project.id,
@@ -761,6 +788,50 @@ export function ProjectWorkspacePage() {
       setErrorMessage(extractApiErrorMessage(error, '生成步骤预览失败，请检查步骤参数。'))
     } finally {
       setPreprocessStepPreviewLoading(false)
+    }
+  }
+
+  async function handleAnalyzePreprocessAdvisor(values: PreprocessFormValues) {
+    if (!project || !selectedDatasetId) return
+    setPreprocessAdvisorLoading(true)
+    try {
+      const response = await api.post<PreprocessTrainingAdvisorRead>('/pipelines/preprocess/training-advisor', {
+        project_id: project.id,
+        dataset_version_id: selectedDatasetId,
+        steps: normalizePreprocessSteps(values.steps ?? []),
+        target_column: selectedDataset?.label_column ?? null,
+      })
+      setPreprocessAdvisor(response.data)
+      setErrorMessage(null)
+    } catch (error) {
+      setErrorMessage(extractApiErrorMessage(error, '生成训练影响建议失败，请检查当前步骤链。'))
+    } finally {
+      setPreprocessAdvisorLoading(false)
+    }
+  }
+
+  async function handleRunSampledPreprocessAdvisor(values: PreprocessFormValues) {
+    if (!project || !selectedDatasetId) return
+    setSampledAdvisorLoading(true)
+    try {
+      const response = await api.post<JobSubmissionRead>('/pipelines/preprocess/training-advisor/sample', {
+        project_id: project.id,
+        dataset_version_id: selectedDatasetId,
+        steps: normalizePreprocessSteps(values.steps ?? []),
+        target_column: selectedDataset?.label_column ?? null,
+        sample_limit: 2000,
+      })
+      setPendingWorkspaceJobs((current) => [...current, {
+        jobId: response.data.job.id,
+        kind: 'advisor',
+        resourceId: response.data.resource_id,
+        tab: 'preprocess',
+      }])
+      handleTabChange('preprocess')
+      messageApi.success('采样训练适配分析已提交，完成后会自动刷新结果。')
+    } catch (error) {
+      setSampledAdvisorLoading(false)
+      setErrorMessage(extractApiErrorMessage(error, '提交采样训练适配分析失败，请检查当前步骤链。'))
     }
   }
 
@@ -835,12 +906,35 @@ export function ProjectWorkspacePage() {
     if (!project || !selectedDatasetId) return
     setRunningTraining(true)
     try {
-      const response = await api.post<JobSubmissionRead>('/training/models', { project_id: project.id, dataset_version_id: selectedDatasetId, preprocess_pipeline_id: values.preprocessPipelineId ?? null, feature_pipeline_id: values.featurePipelineId ?? null, name: values.name, mode: values.mode, algorithm: values.algorithm, target_column: values.targetColumn ?? null, feature_columns: values.featureColumns ?? [], training_params: {} })
+      const advisorSuggestedColumns =
+        sampledAdvisorRun?.result?.summary.suggested_training_columns
+        ?? preprocessAdvisor?.summary.suggested_training_columns
+        ?? []
+      const requestedFeatureColumns = values.featureColumns?.length
+        ? values.featureColumns
+        : !values.featurePipelineId && advisorSuggestedColumns.length
+          ? advisorSuggestedColumns
+          : []
+
+      const response = await api.post<JobSubmissionRead>('/training/models', {
+        project_id: project.id,
+        dataset_version_id: selectedDatasetId,
+        preprocess_pipeline_id: values.preprocessPipelineId ?? null,
+        feature_pipeline_id: values.featurePipelineId ?? null,
+        name: values.name,
+        mode: values.mode,
+        algorithm: values.algorithm,
+        target_column: values.targetColumn ?? null,
+        feature_columns: requestedFeatureColumns,
+        training_params: {},
+      })
       await Promise.all([loadDatasetWorkspace(selectedDatasetId), loadJobs()])
       setSelectedModelId(response.data.resource_id)
       setPendingWorkspaceJobs((current) => [...current, { jobId: response.data.job.id, kind: 'training', resourceId: response.data.resource_id, tab: 'training' }])
       handleTabChange('training')
-      messageApi.success('训练任务已提交，完成后会自动刷新结果。')
+      messageApi.success(requestedFeatureColumns.length && !values.featureColumns?.length && !values.featurePipelineId
+        ? '训练任务已提交，已优先复用预处理阶段的训练影响建议。'
+        : '训练任务已提交，完成后会自动刷新结果。')
     } catch {
       setErrorMessage('执行训练失败，请检查标签列、训练字段或算法选择。')
     } finally {
@@ -934,7 +1028,7 @@ export function ProjectWorkspacePage() {
           onChange={handleTabChange}
           items={[
             { key: 'data', label: stageLabels.data, children: <DataTab project={project} datasets={datasets} selectedDatasetId={selectedDatasetId} selectedDataset={selectedDataset} datasetPreview={datasetPreview} fileList={fileList} datasetsLoading={datasetsLoading} previewLoading={workspaceLoading} fieldMapping={fieldMapping} importSession={importSession} mappingLoading={workspaceLoading} savingMapping={savingMapping} creatingImportSession={creatingImportSession} applyingImportCleaning={applyingImportCleaning} confirmingImportSession={confirmingImportSession} deletingDatasetId={deletingDatasetId} mappingForm={mappingForm} onSelectDataset={setSelectedDatasetId} onFileListChange={setFileList} onCreateImportSession={() => void handleCreateImportSession()} onConfirmImportSession={() => void handleConfirmImportSession()} onSelectImportTemplate={(templateId) => void handleSelectImportTemplate(templateId)} onApplyImportCleaning={(options) => void handleApplyImportCleaning(options)} onSaveFieldMapping={() => void handleSaveFieldMapping()} onDeleteDataset={(datasetId) => void handleDeleteDataset(datasetId)} /> },
-            { key: 'preprocess', label: stageLabels.preprocess, children: <PreprocessTab dataset={selectedDataset} columns={datasetColumns} pipelines={pipelines} selectedPipelineId={selectedPipelineId} selectedPipeline={selectedPipeline} preview={pipelinePreview} stepPreview={preprocessStepPreview} stepPreviewLoading={preprocessStepPreviewLoading} listLoading={workspaceLoading} previewLoading={pipelinePreviewLoading} running={runningPreprocess} onRun={(values) => void handleRunPreprocess(values)} onPreviewStep={(index, values) => void handlePreviewPreprocessStep(index, values)} onSelectPipeline={setSelectedPipelineId} /> },
+            { key: 'preprocess', label: stageLabels.preprocess, children: <PreprocessTab dataset={selectedDataset} columns={datasetColumns} pipelines={pipelines} selectedPipelineId={selectedPipelineId} selectedPipeline={selectedPipeline} preview={pipelinePreview} stepPreview={preprocessStepPreview} stepPreviewLoading={preprocessStepPreviewLoading} listLoading={workspaceLoading} previewLoading={pipelinePreviewLoading} running={runningPreprocess} advisor={preprocessAdvisor} advisorLoading={preprocessAdvisorLoading} sampledAdvisorRun={sampledAdvisorRun} sampledAdvisorLoading={sampledAdvisorLoading} onRun={(values) => void handleRunPreprocess(values)} onPreviewStep={(index, values) => void handlePreviewPreprocessStep(index, values)} onAnalyzeAdvisor={(values) => void handleAnalyzePreprocessAdvisor(values)} onRunSampledAdvisor={(values) => void handleRunSampledPreprocessAdvisor(values)} onSelectPipeline={setSelectedPipelineId} /> },
             { key: 'feature', label: stageLabels.feature, children: <FeatureTab projectId={project?.id ?? null} dataset={selectedDataset} preprocessPipelines={pipelines} pipelines={featurePipelines} templates={featureTemplates} templatesLoading={featureTemplatesLoading} selectedPipelineId={selectedFeaturePipelineId} selectedPipeline={selectedFeaturePipeline} preview={featurePreview} stepPreview={featureStepPreview} listLoading={workspaceLoading} previewLoading={featurePreviewLoading} stepPreviewLoading={featureStepPreviewLoading} running={runningFeaturePipeline} savingTemplate={savingFeatureTemplate} onRun={(values) => void handleRunFeaturePipeline(values)} onPreviewStep={(index, values) => void handlePreviewFeatureStep(index, values)} onSaveTemplate={(values) => void handleSaveFeatureTemplate(values)} onSelectPipeline={setSelectedFeaturePipelineId} /> },
             { key: 'training', label: stageLabels.training, children: <TrainingTab dataset={selectedDataset} columns={featureColumns} featurePipelines={featurePipelines} preprocessPipelines={pipelines} models={models} selectedModelId={selectedModelId} selectedModel={selectedModel} preview={modelPreview} analysis={modelAnalysis} listLoading={workspaceLoading} previewLoading={modelPreviewLoading} analysisLoading={modelAnalysisLoading} running={runningTraining} onRun={(values) => void handleRunTraining(values)} onSelectModel={setSelectedModelId} /> },
             { key: 'analysis', label: stageLabels.analysis, children: <AnalysisTab project={project} models={models} selectedModelId={selectedModelId} selectedModel={selectedModel} preview={modelPreview} analysis={modelAnalysis} llmConfig={llmConfig} llmExplanation={llmExplanation} listLoading={workspaceLoading} previewLoading={modelPreviewLoading} analysisLoading={modelAnalysisLoading} llmConfigLoading={llmConfigLoading} savingLlmConfig={savingLlmConfig} testingLlmConfig={testingLlmConfig} explainingWithLlm={explainingWithLlm} onSelectModel={setSelectedModelId} onSaveLlmConfig={(values) => void handleSaveLlmConfig(values)} onTestLlmConfig={(values) => void handleTestLlmConfig(values)} onRunLlmExplanation={(topK) => void handleRunLlmExplanation(topK)} /> },

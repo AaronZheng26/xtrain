@@ -62,3 +62,62 @@ class PreprocessStepPreviewRead(BaseModel):
     removed_columns: list[str]
     before_rows: list[dict]
     after_rows: list[dict]
+
+
+class PreprocessTrainingAdvisorRequest(BaseModel):
+    project_id: int
+    dataset_version_id: int
+    steps: list[PreprocessStep] = Field(default_factory=list)
+    target_column: str | None = None
+    sample_limit: int = Field(default=1500, ge=100, le=10000)
+
+
+class FieldAdviceRead(BaseModel):
+    field: str
+    status: str
+    reason_code: str
+    reason_text: str
+    recommended_action: str
+    confidence: str
+
+
+class RecommendedPreprocessStepDraftRead(BaseModel):
+    recommendation_id: str
+    title: str
+    description: str
+    step: dict[str, Any]
+
+
+class PreprocessTrainingAdvisorSummaryRead(BaseModel):
+    direct_trainable_fields: int
+    high_risk_fields: int
+    pending_fields: int
+    total_fields: int
+    target_column: str | None = None
+    suggested_training_columns: list[str] = Field(default_factory=list)
+    excluded_training_columns: list[str] = Field(default_factory=list)
+    analysis_basis: str
+
+
+class PreprocessTrainingAdvisorRead(BaseModel):
+    summary: PreprocessTrainingAdvisorSummaryRead
+    field_advice: list[FieldAdviceRead]
+    recommended_steps: list[RecommendedPreprocessStepDraftRead] = Field(default_factory=list)
+    analysis_mode: str
+    sample_size: int
+    generated_at: datetime
+
+
+class PreprocessTrainingAdvisorRunRead(BaseModel):
+    id: int
+    project_id: int
+    dataset_version_id: int
+    job_id: int | None
+    status: str
+    analysis_mode: str
+    sample_size: int
+    result: PreprocessTrainingAdvisorRead | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}

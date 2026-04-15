@@ -209,6 +209,55 @@ export type PreprocessStepPreviewRead = {
   after_rows: Record<string, unknown>[]
 }
 
+export type FieldAdvice = {
+  field: string
+  status: string
+  reason_code: string
+  reason_text: string
+  recommended_action: string
+  confidence: 'high' | 'medium' | 'low' | string
+}
+
+export type RecommendedPreprocessStepDraft = {
+  recommendation_id: string
+  title: string
+  description: string
+  step: PreprocessStep
+}
+
+export type PreprocessTrainingAdvisorSummary = {
+  direct_trainable_fields: number
+  high_risk_fields: number
+  pending_fields: number
+  total_fields: number
+  target_column: string | null
+  suggested_training_columns: string[]
+  excluded_training_columns: string[]
+  analysis_basis: string
+}
+
+export type PreprocessTrainingAdvisorRead = {
+  summary: PreprocessTrainingAdvisorSummary
+  field_advice: FieldAdvice[]
+  recommended_steps: RecommendedPreprocessStepDraft[]
+  analysis_mode: 'quick' | 'sampled_trainability' | string
+  sample_size: number
+  generated_at: string
+}
+
+export type PreprocessTrainingAdvisorRunRead = {
+  id: number
+  project_id: number
+  dataset_version_id: number
+  job_id: number | null
+  status: string
+  analysis_mode: 'sampled_trainability' | string
+  sample_size: number
+  result: PreprocessTrainingAdvisorRead | null
+  created_at: string
+  updated_at: string
+}
+
 export type FeatureStep = {
   step_id?: string
   step_type?: string

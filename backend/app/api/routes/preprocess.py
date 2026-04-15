@@ -1,14 +1,24 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.schemas.job import JobSubmissionRead
 from app.schemas.preprocess import (
+    PreprocessTrainingAdvisorRead,
+    PreprocessTrainingAdvisorRequest,
+    PreprocessTrainingAdvisorRunRead,
     PreprocessPipelineCreate,
     PreprocessPipelineRead,
     PreprocessPreviewRead,
     PreprocessStepPreviewRead,
     PreprocessStepPreviewRequest,
+)
+from app.services.preprocess_advisor import (
+    analyze_preprocess_training_advisor,
+    create_preprocess_training_advisor_job,
+    get_preprocess_training_advisor_run,
+    run_preprocess_training_advisor_job,
+    serialize_preprocess_training_advisor_run,
 )
 from app.services.preprocess import (
     create_preprocess_job,
@@ -40,17 +50,6 @@ def create_preprocess(payload: PreprocessPipelineCreate, db: Session = Depends(g
     return JobSubmissionRead(job=job, resource_id=pipeline.id, resource_type="preprocess_pipeline")
 
 
-@router.get("/preprocess/{pipeline_id}", response_model=PreprocessPipelineRead)
-def read_preprocess_pipeline(pipeline_id: int, db: Session = Depends(get_db)) -> PreprocessPipelineRead:
-    return get_preprocess_pipeline(db, pipeline_id)
-
-
-@router.get("/preprocess/{pipeline_id}/preview", response_model=PreprocessPreviewRead)
-def read_preprocess_preview(pipeline_id: int, limit: int = 20, db: Session = Depends(get_db)) -> PreprocessPreviewRead:
-    pipeline = get_preprocess_pipeline(db, pipeline_id)
-    return PreprocessPreviewRead(**preview_preprocess_pipeline(pipeline, limit=limit))
-
-
 @router.post("/preprocess/step-preview", response_model=PreprocessStepPreviewRead)
 def create_preprocess_step_preview(
     payload: PreprocessStepPreviewRequest,
@@ -66,3 +65,47 @@ def create_preprocess_step_preview(
             limit=payload.limit,
         )
     )
+
+
+@router.post("/preprocess/training-advisor", response_model=PreprocessTrainingAdvisorRead)
+def create_preprocess_training_advisor(
+    payload: PreprocessTrainingAdvisorRequest,
+    db: Session = Depends(get_db),
+) -> PreprocessTrainingAdvisorRead:
+    return PreprocessTrainingAdvisorRead(
+        **analyze_preprocess_training_advisor(
+            db,
+            payload,
+            analysis_mode="quick",
+        )
+    )
+
+
+@router.post("/preprocess/training-advisor/sample", response_model=JobSubmissionRead, status_code=status.HTTP_202_ACCEPTED)
+def create_sampled_preprocess_training_advisor(
+    payload: PreprocessTrainingAdvisorRequest,
+    db: Session = Depends(get_db),
+) -> JobSubmissionRead:
+    job, advisor_run = create_preprocess_training_advisor_job(db, payload)
+    job_manager.submit_task(run_preprocess_training_advisor_job, job.id, advisor_run.id)
+    return JobSubmissionRead(job=job, resource_id=advisor_run.id, resource_type="preprocess_training_advisor")
+
+
+@router.get("/preprocess/training-advisor/runs/{advisor_run_id}", response_model=PreprocessTrainingAdvisorRunRead)
+def read_preprocess_training_advisor_run(
+    advisor_run_id: int,
+    db: Session = Depends(get_db),
+) -> PreprocessTrainingAdvisorRunRead:
+    advisor_run = get_preprocess_training_advisor_run(db, advisor_run_id)
+    return PreprocessTrainingAdvisorRunRead(**serialize_preprocess_training_advisor_run(advisor_run))
+
+
+@router.get("/preprocess/{pipeline_id}", response_model=PreprocessPipelineRead)
+def read_preprocess_pipeline(pipeline_id: int, db: Session = Depends(get_db)) -> PreprocessPipelineRead:
+    return get_preprocess_pipeline(db, pipeline_id)
+
+
+@router.get("/preprocess/{pipeline_id}/preview", response_model=PreprocessPreviewRead)
+def read_preprocess_preview(pipeline_id: int, limit: int = 20, db: Session = Depends(get_db)) -> PreprocessPreviewRead:
+    pipeline = get_preprocess_pipeline(db, pipeline_id)
+    return PreprocessPreviewRead(**preview_preprocess_pipeline(pipeline, limit=limit))
