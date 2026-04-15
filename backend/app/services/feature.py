@@ -14,8 +14,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.db.session import SessionLocal
 from app.models.feature_pipeline import FeaturePipeline
 from app.models.feature_template import FeatureTemplate
+from app.models.job import Job
 from app.models.preprocess_pipeline import PreprocessPipeline
 from app.models.project import Project
 from app.schemas.feature import FeaturePipelineCreate, FeatureTemplateCreate
@@ -277,6 +279,79 @@ BUILTIN_FEATURE_TEMPLATES: list[dict[str, Any]] = [
 
 
 def create_feature_pipeline(db: Session, payload: FeaturePipelineCreate) -> FeaturePipeline:
+    preprocess_pipeline = _validate_feature_payload(db, payload)
+    pipeline = FeaturePipeline(
+        project_id=payload.project_id,
+        dataset_version_id=payload.dataset_version_id,
+        preprocess_pipeline_id=payload.preprocess_pipeline_id,
+        name=payload.name,
+        status="queued",
+        steps=[_normalize_step(step.model_dump()) for step in payload.steps],
+    )
+    db.add(pipeline)
+    db.commit()
+    db.refresh(pipeline)
+    return pipeline
+
+
+def create_feature_job(db: Session, payload: FeaturePipelineCreate) -> tuple[Job, FeaturePipeline]:
+    pipeline = create_feature_pipeline(db, payload)
+    job = Job(
+        name=payload.name,
+        job_type="feature",
+        status="queued",
+        progress=0,
+        message="Waiting to start feature pipeline",
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return job, pipeline
+
+
+def run_feature_pipeline_job(job_id: int, pipeline_id: int) -> None:
+    with SessionLocal() as db:
+        job = db.get(Job, job_id)
+        pipeline = db.get(FeaturePipeline, pipeline_id)
+        if not job or not pipeline:
+            return
+
+        try:
+            _set_job_state(db, job, status="running", progress=5, message="Loading input for feature engineering")
+            pipeline.status = "running"
+            db.add(pipeline)
+            db.commit()
+
+            preprocess_pipeline = _get_preprocess_pipeline(db, pipeline.project_id, pipeline.dataset_version_id, pipeline.preprocess_pipeline_id)
+            frame = _load_feature_input_frame(db, pipeline.dataset_version_id, preprocess_pipeline)
+            _set_job_state(db, job, status="running", progress=35, message="Applying feature steps")
+
+            frame = _apply_steps(frame, pipeline.steps)
+
+            output_dir = get_settings().storage_root_path / "features" / f"project_{pipeline.project_id}"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_path = output_dir / f"feature_{pipeline.id}_{uuid.uuid4().hex[:8]}.parquet"
+            write_parquet(frame, output_path)
+            output_schema, _ = build_schema_snapshot(frame)
+
+            pipeline.status = "completed"
+            pipeline.output_path = str(output_path)
+            pipeline.output_row_count = int(len(frame.index))
+            pipeline.output_schema = output_schema
+            db.add(pipeline)
+
+            _set_job_state(db, job, status="completed", progress=100, message="Feature pipeline completed")
+        except HTTPException as exc:
+            pipeline.status = "failed"
+            db.add(pipeline)
+            _set_job_state(db, job, status="failed", progress=100, message=str(exc.detail))
+        except Exception as exc:
+            pipeline.status = "failed"
+            db.add(pipeline)
+            _set_job_state(db, job, status="failed", progress=100, message=f"Feature pipeline failed: {exc}")
+
+
+def _validate_feature_payload(db: Session, payload: FeaturePipelineCreate) -> PreprocessPipeline | None:
     project = db.get(Project, payload.project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -286,36 +361,7 @@ def create_feature_pipeline(db: Session, payload: FeaturePipelineCreate) -> Feat
         raise HTTPException(status_code=400, detail="Dataset does not belong to the selected project")
 
     preprocess_pipeline = _get_preprocess_pipeline(db, payload.project_id, payload.dataset_version_id, payload.preprocess_pipeline_id)
-
-    pipeline = FeaturePipeline(
-        project_id=payload.project_id,
-        dataset_version_id=payload.dataset_version_id,
-        preprocess_pipeline_id=payload.preprocess_pipeline_id,
-        name=payload.name,
-        status="running",
-        steps=[_normalize_step(step.model_dump()) for step in payload.steps],
-    )
-    db.add(pipeline)
-    db.commit()
-    db.refresh(pipeline)
-
-    frame = _load_feature_input_frame(db, dataset.id, preprocess_pipeline)
-    frame = _apply_steps(frame, pipeline.steps)
-
-    output_dir = get_settings().storage_root_path / "features" / f"project_{payload.project_id}"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"feature_{pipeline.id}_{uuid.uuid4().hex[:8]}.parquet"
-    write_parquet(frame, output_path)
-    output_schema, _ = build_schema_snapshot(frame)
-
-    pipeline.status = "completed"
-    pipeline.output_path = str(output_path)
-    pipeline.output_row_count = int(len(frame.index))
-    pipeline.output_schema = output_schema
-    db.add(pipeline)
-    db.commit()
-    db.refresh(pipeline)
-    return pipeline
+    return preprocess_pipeline
 
 
 def list_feature_pipelines(db: Session, project_id: int, dataset_version_id: int | None = None) -> list[FeaturePipeline]:
@@ -431,6 +477,15 @@ def _serialize_project_template(template: FeatureTemplate) -> dict[str, Any]:
         "created_at": template.created_at,
         "updated_at": template.updated_at,
     }
+
+
+def _set_job_state(db: Session, job: Job, *, status: str, progress: int, message: str) -> None:
+    job.status = status
+    job.progress = progress
+    job.message = message
+    db.add(job)
+    db.commit()
+    db.refresh(job)
 
 
 def _get_preprocess_pipeline(

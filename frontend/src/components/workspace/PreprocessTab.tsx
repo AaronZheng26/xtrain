@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import {
+  Alert,
   Button,
   Card,
   Descriptions,
@@ -474,6 +475,13 @@ export function PreprocessTab(props: Props) {
 
             {props.selectedPipeline ? (
               <>
+                {props.selectedPipeline.status !== 'completed' ? (
+                  <Alert
+                    type={props.selectedPipeline.status === 'failed' ? 'error' : 'info'}
+                    showIcon
+                    message={props.selectedPipeline.status === 'failed' ? '该预处理任务执行失败，请查看任务消息后重试。' : '该预处理任务正在后台执行，完成后会自动刷新结果。'}
+                  />
+                ) : null}
                 <Descriptions
                   column={1}
                   items={[
@@ -489,15 +497,17 @@ export function PreprocessTab(props: Props) {
                     },
                   ]}
                 />
-                <Table<Record<string, unknown>>
-                  rowKey={(_, index) => String(index)}
-                  loading={props.previewLoading}
-                  columns={buildPreviewColumns(props.preview?.columns ?? [])}
-                  dataSource={props.preview?.rows ?? []}
-                  pagination={{ pageSize: 5, hideOnSinglePage: true }}
-                  scroll={{ x: 900 }}
-                  size="small"
-                />
+                {props.selectedPipeline.status === 'completed' ? (
+                  <Table<Record<string, unknown>>
+                    rowKey={(_, index) => String(index)}
+                    loading={props.previewLoading}
+                    columns={buildPreviewColumns(props.preview?.columns ?? [])}
+                    dataSource={props.preview?.rows ?? []}
+                    pagination={{ pageSize: 5, hideOnSinglePage: true }}
+                    scroll={{ x: 900 }}
+                    size="small"
+                  />
+                ) : null}
               </>
             ) : (
               <Empty description="运行一个预处理流水线后，这里会显示输出预览。" />

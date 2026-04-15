@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
+from app.schemas.job import JobSubmissionRead
 from app.schemas.preprocess import (
     PreprocessPipelineCreate,
     PreprocessPipelineRead,
@@ -10,12 +11,14 @@ from app.schemas.preprocess import (
     PreprocessStepPreviewRequest,
 )
 from app.services.preprocess import (
-    create_preprocess_pipeline,
+    create_preprocess_job,
     get_preprocess_pipeline,
     list_preprocess_pipelines,
     preview_preprocess_pipeline,
     preview_preprocess_step,
+    run_preprocess_pipeline_job,
 )
+from app.services.job_manager import job_manager
 
 
 router = APIRouter()
@@ -30,9 +33,11 @@ def read_preprocess_pipelines(
     return list_preprocess_pipelines(db, project_id, dataset_version_id)
 
 
-@router.post("/preprocess", response_model=PreprocessPipelineRead, status_code=status.HTTP_201_CREATED)
-def create_preprocess(payload: PreprocessPipelineCreate, db: Session = Depends(get_db)) -> PreprocessPipelineRead:
-    return create_preprocess_pipeline(db, payload)
+@router.post("/preprocess", response_model=JobSubmissionRead, status_code=status.HTTP_202_ACCEPTED)
+def create_preprocess(payload: PreprocessPipelineCreate, db: Session = Depends(get_db)) -> JobSubmissionRead:
+    job, pipeline = create_preprocess_job(db, payload)
+    job_manager.submit_task(run_preprocess_pipeline_job, job.id, pipeline.id)
+    return JobSubmissionRead(job=job, resource_id=pipeline.id, resource_type="preprocess_pipeline")
 
 
 @router.get("/preprocess/{pipeline_id}", response_model=PreprocessPipelineRead)

@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.db.session import SessionLocal
 from app.models.feature_pipeline import FeaturePipeline
 from app.models.job import Job
 from app.models.model_version import ModelVersion
@@ -45,6 +46,11 @@ RESERVED_ANALYSIS_SIGNAL_COLUMNS = RESERVED_TRAINING_COLUMNS
 
 
 def create_model_version(db: Session, payload: TrainingRequest) -> ModelVersion:
+    model_version, _job = create_training_job(db, payload)
+    return model_version
+
+
+def create_training_job(db: Session, payload: TrainingRequest) -> tuple[ModelVersion, Job]:
     project = db.get(Project, payload.project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -59,9 +65,9 @@ def create_model_version(db: Session, payload: TrainingRequest) -> ModelVersion:
     job = Job(
         name=payload.name,
         job_type="training",
-        status="running",
-        progress=5,
-        message="Preparing training input",
+        status="queued",
+        progress=0,
+        message="Waiting to start training",
     )
     db.add(job)
     db.commit()
@@ -76,7 +82,7 @@ def create_model_version(db: Session, payload: TrainingRequest) -> ModelVersion:
         name=payload.name,
         mode=payload.mode,
         algorithm=payload.algorithm,
-        status="running",
+        status="queued",
         target_column=payload.target_column,
         feature_columns=payload.feature_columns,
         training_params=payload.training_params,
@@ -84,57 +90,81 @@ def create_model_version(db: Session, payload: TrainingRequest) -> ModelVersion:
     db.add(model_version)
     db.commit()
     db.refresh(model_version)
+    return model_version, job
 
-    try:
-        frame = _load_training_input_frame(db, dataset.id, preprocess_pipeline, feature_pipeline)
-        job.progress = 20
-        job.message = "Preparing training matrix"
-        db.add(job)
-        db.commit()
 
-        trained = _train_model(
-            frame,
-            dataset.label_column,
-            payload,
-            preprocess_pipeline=preprocess_pipeline,
-            feature_pipeline=feature_pipeline,
+def run_training_job(job_id: int, model_id: int) -> None:
+    with SessionLocal() as db:
+        job = db.get(Job, job_id)
+        model_version = db.get(ModelVersion, model_id)
+        if not job or not model_version:
+            return
+
+        payload = TrainingRequest(
+            project_id=model_version.project_id,
+            dataset_version_id=model_version.dataset_version_id,
+            preprocess_pipeline_id=model_version.preprocess_pipeline_id,
+            feature_pipeline_id=model_version.feature_pipeline_id,
+            name=model_version.name,
+            mode=model_version.mode,
+            algorithm=model_version.algorithm,
+            target_column=model_version.target_column,
+            feature_columns=model_version.feature_columns or [],
+            training_params=model_version.training_params or {},
         )
 
-        output_dir = get_settings().storage_root_path / "models" / f"project_{payload.project_id}"
-        output_dir.mkdir(parents=True, exist_ok=True)
-        artifact_path = output_dir / f"model_{model_version.id}_{uuid.uuid4().hex[:8]}.pkl"
-        prediction_path = output_dir / f"predictions_{model_version.id}_{uuid.uuid4().hex[:8]}.parquet"
+        try:
+            dataset = get_dataset(db, payload.dataset_version_id)
+            preprocess_pipeline = _validate_preprocess_pipeline(db, payload)
+            feature_pipeline = _validate_feature_pipeline(db, payload)
 
-        _try_dump_model(trained["model"], artifact_path)
-        write_parquet(trained["prediction_frame"], prediction_path)
+            _set_job_state(db, job, status="running", progress=5, message="Preparing training input")
+            model_version.status = "running"
+            db.add(model_version)
+            db.commit()
 
-        model_version.status = "completed"
-        model_version.target_column = trained["target_column"]
-        model_version.feature_columns = trained["feature_columns"]
-        model_version.metrics = trained["metrics"]
-        model_version.report_json = trained["report_json"]
-        model_version.artifact_path = str(artifact_path) if artifact_path.exists() else None
-        model_version.prediction_path = str(prediction_path)
-        db.add(model_version)
+            frame = _load_training_input_frame(db, dataset.id, preprocess_pipeline, feature_pipeline)
+            _set_job_state(db, job, status="running", progress=25, message="Preparing training matrix")
 
-        job.status = "completed"
-        job.progress = 100
-        job.message = "Training finished"
-        db.add(job)
-        db.commit()
-        db.refresh(model_version)
-        return model_version
-    except Exception as exc:
-        model_version.status = "failed"
-        db.add(model_version)
-        job.status = "failed"
-        job.progress = 100
-        job.message = str(exc)
-        db.add(job)
-        db.commit()
-        if isinstance(exc, HTTPException):
-            raise
-        raise HTTPException(status_code=500, detail=f"Training failed: {exc}") from exc
+            trained = _train_model(
+                frame,
+                dataset.label_column,
+                payload,
+                preprocess_pipeline=preprocess_pipeline,
+                feature_pipeline=feature_pipeline,
+            )
+
+            output_dir = get_settings().storage_root_path / "models" / f"project_{payload.project_id}"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            artifact_path = output_dir / f"model_{model_version.id}_{uuid.uuid4().hex[:8]}.pkl"
+            prediction_path = output_dir / f"predictions_{model_version.id}_{uuid.uuid4().hex[:8]}.parquet"
+
+            _set_job_state(db, job, status="running", progress=75, message="Persisting model artifacts")
+            _try_dump_model(trained["model"], artifact_path)
+            write_parquet(trained["prediction_frame"], prediction_path)
+
+            model_version.status = "completed"
+            model_version.target_column = trained["target_column"]
+            model_version.feature_columns = trained["feature_columns"]
+            model_version.metrics = trained["metrics"]
+            model_version.report_json = trained["report_json"]
+            model_version.artifact_path = str(artifact_path) if artifact_path.exists() else None
+            model_version.prediction_path = str(prediction_path)
+            db.add(model_version)
+            db.commit()
+            db.refresh(model_version)
+
+            _set_job_state(db, job, status="completed", progress=100, message="Training finished")
+        except HTTPException as exc:
+            model_version.status = "failed"
+            db.add(model_version)
+            db.commit()
+            _set_job_state(db, job, status="failed", progress=100, message=str(exc.detail))
+        except Exception as exc:
+            model_version.status = "failed"
+            db.add(model_version)
+            db.commit()
+            _set_job_state(db, job, status="failed", progress=100, message=f"Training failed: {exc}")
 
 
 def list_model_versions(
@@ -636,6 +666,15 @@ def _build_score_points(frame: pd.DataFrame) -> list[dict[str, Any]]:
             }
         )
     return points
+
+
+def _set_job_state(db: Session, job: Job, *, status: str, progress: int, message: str) -> None:
+    job.status = status
+    job.progress = progress
+    job.message = message
+    db.add(job)
+    db.commit()
+    db.refresh(job)
 
 
 def _build_score_histogram(frame: pd.DataFrame, histogram_bins: int) -> list[dict[str, Any]]:

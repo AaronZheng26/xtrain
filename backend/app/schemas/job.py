@@ -19,3 +19,9 @@ class JobRead(BaseModel):
 class DemoJobRequest(BaseModel):
     name: str = "demo-training"
     duration_seconds: int = 8
+
+
+class JobSubmissionRead(BaseModel):
+    job: JobRead
+    resource_id: int
+    resource_type: str

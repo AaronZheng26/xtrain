@@ -40,6 +40,12 @@ export type Job = {
   updated_at: string
 }
 
+export type JobSubmissionRead = {
+  job: Job
+  resource_id: number
+  resource_type: string
+}
+
 export type SchemaField = {
   name: string
   dtype: string

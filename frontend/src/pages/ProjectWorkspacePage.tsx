@@ -27,6 +27,7 @@ import type {
   ImportSession,
   ImportSessionConfirmRead,
   Job,
+  JobSubmissionRead,
   LlmProviderConfig,
   LlmProviderConfigPayload,
   ModelAnalysisRead,
@@ -51,6 +52,13 @@ const stageLabels: Record<WorkspaceTabKey, string> = {
 }
 
 const LLM_REQUEST_TIMEOUT_MS = 90000
+
+type PendingWorkspaceJob = {
+  jobId: number
+  kind: 'preprocess' | 'feature' | 'training'
+  resourceId: number
+  tab: WorkspaceTabKey
+}
 
 function normalizeFeatureSteps(steps: FeatureFormValues['steps']) {
   return (steps ?? []).map((step) => {
@@ -216,11 +224,13 @@ export function ProjectWorkspacePage() {
   const [runningTraining, setRunningTraining] = useState(false)
   const [startingJob, setStartingJob] = useState(false)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [pendingWorkspaceJobs, setPendingWorkspaceJobs] = useState<PendingWorkspaceJob[]>([])
 
   const selectedPipeline = useMemo(() => pipelines.find((pipeline) => pipeline.id === selectedPipelineId) ?? null, [pipelines, selectedPipelineId])
   const selectedFeaturePipeline = useMemo(() => featurePipelines.find((pipeline) => pipeline.id === selectedFeaturePipelineId) ?? null, [featurePipelines, selectedFeaturePipelineId])
   const selectedModel = useMemo(() => models.find((model) => model.id === selectedModelId) ?? null, [models, selectedModelId])
   const latestJob = jobs[0] ?? null
+  const hasPendingWorkspaceJobs = pendingWorkspaceJobs.length > 0
   const datasetColumns = selectedDataset?.schema_snapshot.map((field) => field.name) ?? []
   const featureColumns = selectedFeaturePipeline?.output_schema.map((field) => field.name) ?? selectedPipeline?.output_schema.map((field) => field.name) ?? datasetColumns
 
@@ -393,36 +403,61 @@ export function ProjectWorkspacePage() {
     if (backendStatus !== 'online') return
     const timer = window.setInterval(() => {
       if (!document.hidden) void loadJobs()
-    }, 10000)
+    }, hasPendingWorkspaceJobs ? 3000 : 10000)
     return () => window.clearInterval(timer)
-  }, [backendStatus, loadJobs])
+  }, [backendStatus, hasPendingWorkspaceJobs, loadJobs])
 
   useEffect(() => {
     if (backendStatus === 'online' && selectedDatasetId) void loadDatasetWorkspace(selectedDatasetId)
   }, [backendStatus, loadDatasetWorkspace, selectedDatasetId])
 
   useEffect(() => {
-    if (backendStatus === 'online' && activeTab === 'preprocess' && selectedPipelineId) void loadPipelinePreview(selectedPipelineId)
-  }, [backendStatus, activeTab, loadPipelinePreview, selectedPipelineId])
+    if (backendStatus === 'online' && activeTab === 'preprocess' && selectedPipelineId && selectedPipeline?.status === 'completed' && selectedPipeline.output_path) {
+      void loadPipelinePreview(selectedPipelineId)
+      return
+    }
+    setPipelinePreview(null)
+  }, [backendStatus, activeTab, loadPipelinePreview, selectedPipelineId, selectedPipeline])
 
   useEffect(() => {
     setPreprocessStepPreview(null)
   }, [selectedDatasetId])
 
   useEffect(() => {
-    if (backendStatus === 'online' && activeTab === 'feature' && selectedFeaturePipelineId) void loadFeaturePreview(selectedFeaturePipelineId)
-  }, [backendStatus, activeTab, loadFeaturePreview, selectedFeaturePipelineId])
+    if (backendStatus === 'online' && activeTab === 'feature' && selectedFeaturePipelineId && selectedFeaturePipeline?.status === 'completed' && selectedFeaturePipeline.output_path) {
+      void loadFeaturePreview(selectedFeaturePipelineId)
+      return
+    }
+    setFeaturePreview(null)
+  }, [backendStatus, activeTab, loadFeaturePreview, selectedFeaturePipelineId, selectedFeaturePipeline])
 
   useEffect(() => {
     if (backendStatus === 'online' && activeTab === 'feature' && project) void loadFeatureTemplates(project.id)
   }, [backendStatus, activeTab, loadFeatureTemplates, project])
 
   useEffect(() => {
-    if (backendStatus === 'online' && selectedModelId && (activeTab === 'training' || activeTab === 'analysis')) void loadModelPreview(selectedModelId)
-  }, [backendStatus, activeTab, loadModelPreview, selectedModelId])
+    if (
+      backendStatus === 'online'
+      && selectedModelId
+      && (activeTab === 'training' || activeTab === 'analysis')
+      && selectedModel?.status === 'completed'
+      && selectedModel.prediction_path
+    ) {
+      void loadModelPreview(selectedModelId)
+      return
+    }
+    setModelPreview(null)
+  }, [backendStatus, activeTab, loadModelPreview, selectedModelId, selectedModel])
 
   useEffect(() => {
-    if (!selectedModel || backendStatus !== 'online' || (activeTab !== 'training' && activeTab !== 'analysis')) {
+    if (
+      !selectedModel
+      || selectedModel.status !== 'completed'
+      || !selectedModel.prediction_path
+      || backendStatus !== 'online'
+      || (activeTab !== 'training' && activeTab !== 'analysis')
+    ) {
+      setModelAnalysis(null)
       return
     }
     if (selectedModel.mode !== 'unsupervised') {
@@ -453,6 +488,59 @@ export function ProjectWorkspacePage() {
       return next
     })
   }, [setSearchParams])
+
+  useEffect(() => {
+    if (!pendingWorkspaceJobs.length || !selectedDatasetId) {
+      return
+    }
+
+    const datasetId = selectedDatasetId
+    const settledJobs = pendingWorkspaceJobs
+      .map((pendingJob) => ({
+        ...pendingJob,
+        job: jobs.find((job) => job.id === pendingJob.jobId) ?? null,
+      }))
+      .filter((pendingJob) => pendingJob.job && (pendingJob.job.status === 'completed' || pendingJob.job.status === 'failed'))
+
+    if (!settledJobs.length) {
+      return
+    }
+
+    let cancelled = false
+
+    async function syncWorkspaceAfterJobs() {
+      setPendingWorkspaceJobs((current) => current.filter((pendingJob) => !settledJobs.some((settled) => settled.jobId === pendingJob.jobId)))
+      await Promise.all([loadDatasetWorkspace(datasetId), loadJobs()])
+      if (cancelled) return
+
+      for (const settled of settledJobs) {
+        if (!settled.job) continue
+        if (settled.kind === 'preprocess') {
+          setSelectedPipelineId(settled.resourceId)
+        } else if (settled.kind === 'feature') {
+          setSelectedFeaturePipelineId(settled.resourceId)
+        } else if (settled.kind === 'training') {
+          setSelectedModelId(settled.resourceId)
+        }
+
+        handleTabChange(settled.tab)
+
+        if (settled.job.status === 'completed') {
+          messageApi.success(settled.job.message || '后台任务已完成。')
+        } else {
+          const failureMessage = settled.job.message || '后台任务执行失败，请检查后端日志。'
+          setErrorMessage(failureMessage)
+          messageApi.error(failureMessage)
+        }
+      }
+    }
+
+    void syncWorkspaceAfterJobs()
+
+    return () => {
+      cancelled = true
+    }
+  }, [handleTabChange, jobs, loadDatasetWorkspace, loadJobs, messageApi, pendingWorkspaceJobs, selectedDatasetId])
 
   async function handleCreateImportSession() {
     if (!project) return
@@ -604,11 +692,12 @@ export function ProjectWorkspacePage() {
         }
       })
 
-      const response = await api.post<PreprocessPipeline>('/pipelines/preprocess', { project_id: project.id, dataset_version_id: selectedDatasetId, name: values.name, steps })
-      await loadDatasetWorkspace(selectedDatasetId)
-      setSelectedPipelineId(response.data.id)
+      const response = await api.post<JobSubmissionRead>('/pipelines/preprocess', { project_id: project.id, dataset_version_id: selectedDatasetId, name: values.name, steps })
+      await Promise.all([loadDatasetWorkspace(selectedDatasetId), loadJobs()])
+      setSelectedPipelineId(response.data.resource_id)
+      setPendingWorkspaceJobs((current) => [...current, { jobId: response.data.job.id, kind: 'preprocess', resourceId: response.data.resource_id, tab: 'preprocess' }])
       handleTabChange('preprocess')
-      messageApi.success('预处理已执行并生成输出。')
+      messageApi.success('预处理任务已提交，完成后会自动刷新结果。')
     } catch (error) {
       setErrorMessage(extractApiErrorMessage(error, '执行预处理失败，请检查步骤参数。'))
     } finally {
@@ -659,7 +748,7 @@ export function ProjectWorkspacePage() {
     if (!project || !selectedDatasetId) return
     setRunningFeaturePipeline(true)
     try {
-      const response = await api.post<FeaturePipeline>('/pipelines/features', {
+      const response = await api.post<JobSubmissionRead>('/pipelines/features', {
         project_id: project.id,
         dataset_version_id: selectedDatasetId,
         preprocess_pipeline_id: values.preprocessPipelineId ?? null,
@@ -669,9 +758,10 @@ export function ProjectWorkspacePage() {
         steps: normalizeFeatureSteps(values.steps ?? []),
       })
       await loadDatasetWorkspace(selectedDatasetId)
-      setSelectedFeaturePipelineId(response.data.id)
+      setSelectedFeaturePipelineId(response.data.resource_id)
+      setPendingWorkspaceJobs((current) => [...current, { jobId: response.data.job.id, kind: 'feature', resourceId: response.data.resource_id, tab: 'feature' }])
       handleTabChange('feature')
-      messageApi.success('特征工程已执行并生成输出。')
+      messageApi.success('特征工程任务已提交，完成后会自动刷新结果。')
     } catch (error) {
       setErrorMessage(extractApiErrorMessage(error, '执行特征工程失败，请检查步骤参数。'))
     } finally {
@@ -725,11 +815,12 @@ export function ProjectWorkspacePage() {
     if (!project || !selectedDatasetId) return
     setRunningTraining(true)
     try {
-      const response = await api.post<ModelVersion>('/training/models', { project_id: project.id, dataset_version_id: selectedDatasetId, preprocess_pipeline_id: values.preprocessPipelineId ?? null, feature_pipeline_id: values.featurePipelineId ?? null, name: values.name, mode: values.mode, algorithm: values.algorithm, target_column: values.targetColumn ?? null, feature_columns: values.featureColumns ?? [], training_params: {} })
+      const response = await api.post<JobSubmissionRead>('/training/models', { project_id: project.id, dataset_version_id: selectedDatasetId, preprocess_pipeline_id: values.preprocessPipelineId ?? null, feature_pipeline_id: values.featurePipelineId ?? null, name: values.name, mode: values.mode, algorithm: values.algorithm, target_column: values.targetColumn ?? null, feature_columns: values.featureColumns ?? [], training_params: {} })
       await Promise.all([loadDatasetWorkspace(selectedDatasetId), loadJobs()])
-      setSelectedModelId(response.data.id)
+      setSelectedModelId(response.data.resource_id)
+      setPendingWorkspaceJobs((current) => [...current, { jobId: response.data.job.id, kind: 'training', resourceId: response.data.resource_id, tab: 'training' }])
       handleTabChange('training')
-      messageApi.success('训练已完成并生成模型版本。')
+      messageApi.success('训练任务已提交，完成后会自动刷新结果。')
     } catch {
       setErrorMessage('执行训练失败，请检查标签列、训练字段或算法选择。')
     } finally {

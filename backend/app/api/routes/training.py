@@ -2,14 +2,17 @@ from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
+from app.schemas.job import JobSubmissionRead
 from app.schemas.training import ModelAnalysisRead, ModelPreviewRead, ModelVersionRead, TrainingRequest
 from app.services.training import (
-    create_model_version,
+    create_training_job,
     get_model_analysis,
     get_model_version,
     list_model_versions,
     preview_model_version,
+    run_training_job,
 )
+from app.services.job_manager import job_manager
 
 
 router = APIRouter()
@@ -24,9 +27,11 @@ def read_model_versions(
     return list_model_versions(db, project_id, dataset_version_id)
 
 
-@router.post("/models", response_model=ModelVersionRead, status_code=status.HTTP_201_CREATED)
-def create_model(payload: TrainingRequest, db: Session = Depends(get_db)) -> ModelVersionRead:
-    return create_model_version(db, payload)
+@router.post("/models", response_model=JobSubmissionRead, status_code=status.HTTP_202_ACCEPTED)
+def create_model(payload: TrainingRequest, db: Session = Depends(get_db)) -> JobSubmissionRead:
+    model_version, job = create_training_job(db, payload)
+    job_manager.submit_task(run_training_job, job.id, model_version.id)
+    return JobSubmissionRead(job=job, resource_id=model_version.id, resource_type="model_version")
 
 
 @router.get("/models/{model_id}", response_model=ModelVersionRead)

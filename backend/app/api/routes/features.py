@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
+from app.schemas.job import JobSubmissionRead
 from app.schemas.feature import (
     FeaturePipelineCreate,
     FeaturePipelineRead,
@@ -10,12 +11,14 @@ from app.schemas.feature import (
     FeatureStepPreviewRequest,
 )
 from app.services.feature import (
-    create_feature_pipeline,
+    create_feature_job,
     get_feature_pipeline,
     list_feature_pipelines,
     preview_feature_pipeline,
     preview_feature_step,
+    run_feature_pipeline_job,
 )
+from app.services.job_manager import job_manager
 
 
 router = APIRouter()
@@ -30,9 +33,11 @@ def read_feature_pipelines(
     return list_feature_pipelines(db, project_id, dataset_version_id)
 
 
-@router.post("/features", response_model=FeaturePipelineRead, status_code=status.HTTP_201_CREATED)
-def create_feature(payload: FeaturePipelineCreate, db: Session = Depends(get_db)) -> FeaturePipelineRead:
-    return create_feature_pipeline(db, payload)
+@router.post("/features", response_model=JobSubmissionRead, status_code=status.HTTP_202_ACCEPTED)
+def create_feature(payload: FeaturePipelineCreate, db: Session = Depends(get_db)) -> JobSubmissionRead:
+    job, pipeline = create_feature_job(db, payload)
+    job_manager.submit_task(run_feature_pipeline_job, job.id, pipeline.id)
+    return JobSubmissionRead(job=job, resource_id=pipeline.id, resource_type="feature_pipeline")
 
 
 @router.get("/features/{pipeline_id}", response_model=FeaturePipelineRead)

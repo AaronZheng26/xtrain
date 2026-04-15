@@ -129,6 +129,17 @@ export function TrainingTab(props: Props) {
                   { key: 'excluded', label: '排除字段数', children: props.selectedModel.excluded_feature_columns.length },
                 ]}
               />
+              {props.selectedModel.status !== 'completed' ? (
+                <Alert
+                  type={props.selectedModel.status === 'failed' ? 'error' : 'info'}
+                  showIcon
+                  message={
+                    props.selectedModel.status === 'failed'
+                      ? '该训练任务执行失败，请查看任务状态和训练参数后重试。'
+                      : '该训练任务正在后台执行，完成后会自动刷新指标和预测结果。'
+                  }
+                />
+              ) : null}
               {props.selectedModel.excluded_feature_columns.length > 0 ? (
                 <Alert
                   type="warning"
@@ -168,7 +179,7 @@ export function TrainingTab(props: Props) {
                 </Space>
               </Card>
               {props.selectedModel.mode === 'unsupervised' ? (
-                props.analysis ? (
+                props.selectedModel.status === 'completed' && props.analysis ? (
                   <Card size="small" className="nested-card" title="异常可视化">
                     <Space direction="vertical" size={12} className="full-width">
                       <Space wrap>
@@ -182,15 +193,17 @@ export function TrainingTab(props: Props) {
                   <Alert type="info" showIcon message={props.analysisLoading ? '正在生成异常可视化…' : '选择无监督模型后，这里会展示异常分数和二维聚类视图。'} />
                 )
               ) : null}
-              <Table<Record<string, unknown>>
-                rowKey={(_, index) => String(index)}
-                loading={props.previewLoading}
-                columns={buildPreviewColumns(props.preview?.columns ?? [])}
-                dataSource={props.preview?.rows ?? []}
-                pagination={{ pageSize: 5, hideOnSinglePage: true }}
-                scroll={{ x: 1000 }}
-                size="small"
-              />
+              {props.selectedModel.status === 'completed' ? (
+                <Table<Record<string, unknown>>
+                  rowKey={(_, index) => String(index)}
+                  loading={props.previewLoading}
+                  columns={buildPreviewColumns(props.preview?.columns ?? [])}
+                  dataSource={props.preview?.rows ?? []}
+                  pagination={{ pageSize: 5, hideOnSinglePage: true }}
+                  scroll={{ x: 1000 }}
+                  size="small"
+                />
+              ) : null}
             </Space>
           ) : (
             <Empty description="执行一次训练后，这里会显示指标和预测预览。" />

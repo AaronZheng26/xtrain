@@ -2,6 +2,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from typing import Any, Callable
 
 from app.core.config import get_settings
 from app.db.session import SessionLocal
@@ -28,6 +29,12 @@ class JobManager:
             self.start()
         assert self._executor is not None
         self._executor.submit(self._run_demo_job, job_id, max(duration_seconds, 1))
+
+    def submit_task(self, func: Callable[..., Any], *args: Any) -> None:
+        if self._executor is None:
+            self.start()
+        assert self._executor is not None
+        self._executor.submit(func, *args)
 
     def _run_demo_job(self, job_id: int, duration_seconds: int) -> None:
         self._update_job(job_id, status="running", progress=5, message="Preparing training resources")

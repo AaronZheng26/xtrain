@@ -13,6 +13,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.db.session import SessionLocal
+from app.models.job import Job
 from app.models.preprocess_pipeline import PreprocessPipeline
 from app.models.project import Project
 from app.schemas.preprocess import PreprocessPipelineCreate
@@ -27,6 +29,82 @@ from app.services.field_mapping import get_or_create_field_mapping
 
 
 def create_preprocess_pipeline(db: Session, payload: PreprocessPipelineCreate) -> PreprocessPipeline:
+    _validate_preprocess_payload(db, payload)
+    pipeline = PreprocessPipeline(
+        project_id=payload.project_id,
+        dataset_version_id=payload.dataset_version_id,
+        name=payload.name,
+        status="queued",
+        steps=[_normalize_step(step.model_dump()) for step in payload.steps],
+    )
+    db.add(pipeline)
+    db.commit()
+    db.refresh(pipeline)
+    return pipeline
+
+
+def create_preprocess_job(db: Session, payload: PreprocessPipelineCreate) -> tuple[Job, PreprocessPipeline]:
+    pipeline = create_preprocess_pipeline(db, payload)
+    job = Job(
+        name=payload.name,
+        job_type="preprocess",
+        status="queued",
+        progress=0,
+        message="Waiting to start preprocess pipeline",
+    )
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    return job, pipeline
+
+
+def run_preprocess_pipeline_job(job_id: int, pipeline_id: int) -> None:
+    with SessionLocal() as db:
+        job = db.get(Job, job_id)
+        pipeline = db.get(PreprocessPipeline, pipeline_id)
+        if not job or not pipeline:
+            return
+
+        try:
+            _set_job_state(db, job, status="running", progress=5, message="Loading dataset for preprocessing")
+            pipeline.status = "running"
+            db.add(pipeline)
+            db.commit()
+
+            dataset = get_dataset(db, pipeline.dataset_version_id)
+            frame = load_parquet_frame(dataset.parquet_path)
+            _set_job_state(db, job, status="running", progress=30, message="Applying field mapping")
+
+            mapping = get_or_create_field_mapping(db, dataset.id).mappings
+            frame = apply_field_mapping(frame, mapping)
+            _set_job_state(db, job, status="running", progress=65, message="Executing preprocess steps")
+
+            frame = _apply_steps(frame, pipeline.steps)
+
+            output_dir = get_settings().storage_root_path / "preprocessed" / f"project_{pipeline.project_id}"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_path = output_dir / f"preprocess_{pipeline.id}_{uuid.uuid4().hex[:8]}.parquet"
+            write_parquet(frame, output_path)
+            output_schema, _ = build_schema_snapshot(frame)
+
+            pipeline.status = "completed"
+            pipeline.output_path = str(output_path)
+            pipeline.output_row_count = int(len(frame.index))
+            pipeline.output_schema = output_schema
+            db.add(pipeline)
+
+            _set_job_state(db, job, status="completed", progress=100, message="Preprocess pipeline completed")
+        except HTTPException as exc:
+            pipeline.status = "failed"
+            db.add(pipeline)
+            _set_job_state(db, job, status="failed", progress=100, message=str(exc.detail))
+        except Exception as exc:
+            pipeline.status = "failed"
+            db.add(pipeline)
+            _set_job_state(db, job, status="failed", progress=100, message=f"Preprocess pipeline failed: {exc}")
+
+
+def _validate_preprocess_payload(db: Session, payload: PreprocessPipelineCreate) -> None:
     project = db.get(Project, payload.project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -34,37 +112,6 @@ def create_preprocess_pipeline(db: Session, payload: PreprocessPipelineCreate) -
     dataset = get_dataset(db, payload.dataset_version_id)
     if dataset.project_id != payload.project_id:
         raise HTTPException(status_code=400, detail="Dataset does not belong to the selected project")
-
-    pipeline = PreprocessPipeline(
-        project_id=payload.project_id,
-        dataset_version_id=payload.dataset_version_id,
-        name=payload.name,
-        status="running",
-        steps=[_normalize_step(step.model_dump()) for step in payload.steps],
-    )
-    db.add(pipeline)
-    db.commit()
-    db.refresh(pipeline)
-
-    frame = load_parquet_frame(dataset.parquet_path)
-    mapping = get_or_create_field_mapping(db, dataset.id).mappings
-    frame = apply_field_mapping(frame, mapping)
-    frame = _apply_steps(frame, pipeline.steps)
-
-    output_dir = get_settings().storage_root_path / "preprocessed" / f"project_{payload.project_id}"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"preprocess_{pipeline.id}_{uuid.uuid4().hex[:8]}.parquet"
-    write_parquet(frame, output_path)
-    output_schema, _ = build_schema_snapshot(frame)
-
-    pipeline.status = "completed"
-    pipeline.output_path = str(output_path)
-    pipeline.output_row_count = int(len(frame.index))
-    pipeline.output_schema = output_schema
-    db.add(pipeline)
-    db.commit()
-    db.refresh(pipeline)
-    return pipeline
 
 
 def list_preprocess_pipelines(db: Session, project_id: int, dataset_version_id: int | None = None) -> list[PreprocessPipeline]:
@@ -211,6 +258,15 @@ def _apply_single_step(frame: pd.DataFrame, step: dict[str, Any]) -> pd.DataFram
         raise HTTPException(status_code=400, detail=f"Unsupported preprocess step: {step_type}")
 
     return current.reset_index(drop=True)
+
+
+def _set_job_state(db: Session, job: Job, *, status: str, progress: int, message: str) -> None:
+    job.status = status
+    job.progress = progress
+    job.message = message
+    db.add(job)
+    db.commit()
+    db.refresh(job)
 
 
 def _normalize_step(step: dict[str, Any]) -> dict[str, Any]:

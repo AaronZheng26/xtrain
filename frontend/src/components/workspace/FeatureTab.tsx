@@ -1,5 +1,6 @@
 import { useEffect, useMemo } from 'react'
 import {
+  Alert,
   Button,
   Card,
   Descriptions,
@@ -621,7 +622,19 @@ export function FeatureTab(props: Props) {
             {props.selectedPipeline ? (
               <Space direction="vertical" size={16} className="full-width">
                 <Descriptions column={1} items={[{ key: 'rows', label: '输出行数', children: props.selectedPipeline.output_row_count }, { key: 'steps', label: '步骤数', children: props.selectedPipeline.steps.length }, { key: 'input', label: '输入预处理版本', children: props.selectedPipeline.preprocess_pipeline_id ?? '直接基于数据集' }, { key: 'columns', label: '输出列数', children: props.selectedPipeline.output_schema.length }]} />
-                <Table<Record<string, unknown>> rowKey={(_, index) => String(index)} loading={props.previewLoading} columns={buildPreviewColumns(props.preview?.columns ?? [])} dataSource={props.preview?.rows ?? []} pagination={{ pageSize: 5, hideOnSinglePage: true }} scroll={{ x: 900 }} size="small" />
+                {props.selectedPipeline.status !== 'completed' ? (
+                  <Alert
+                    type={props.selectedPipeline.status === 'failed' ? 'error' : 'info'}
+                    showIcon
+                    message={
+                      props.selectedPipeline.status === 'failed'
+                        ? '该特征任务执行失败，请查看任务状态和步骤参数后重试。'
+                        : '该特征任务正在后台执行，完成后会自动刷新输出结果。'
+                    }
+                  />
+                ) : (
+                  <Table<Record<string, unknown>> rowKey={(_, index) => String(index)} loading={props.previewLoading} columns={buildPreviewColumns(props.preview?.columns ?? [])} dataSource={props.preview?.rows ?? []} pagination={{ pageSize: 5, hideOnSinglePage: true }} scroll={{ x: 900 }} size="small" />
+                )}
               </Space>
             ) : (
               <Empty description="运行一个特征流水线后，这里会显示输出预览。" />
