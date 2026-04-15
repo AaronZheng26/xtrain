@@ -52,6 +52,7 @@ const stageLabels: Record<WorkspaceTabKey, string> = {
 }
 
 const LLM_REQUEST_TIMEOUT_MS = 90000
+const IMPORT_REQUEST_TIMEOUT_MS = 120000
 
 type PendingWorkspaceJob = {
   jobId: number
@@ -554,12 +555,19 @@ export function ProjectWorkspacePage() {
     formData.append('file', currentFile)
     setCreatingImportSession(true)
     try {
-      const response = await api.post<ImportSession>('/import-sessions', formData, { headers: { 'Content-Type': 'multipart/form-data' } })
+      const response = await api.post<ImportSession>(
+        '/import-sessions',
+        formData,
+        {
+          headers: { 'Content-Type': 'multipart/form-data' },
+          timeout: IMPORT_REQUEST_TIMEOUT_MS,
+        },
+      )
       setFileList([])
       setImportSession(response.data)
       messageApi.success('导入会话已创建，请确认预览后生成数据版本。')
-    } catch {
-      setErrorMessage('创建导入会话失败，请确认格式和编码是否正确。')
+    } catch (error) {
+      setErrorMessage(extractApiErrorMessage(error, '创建导入会话失败，请确认格式、编码或文件大小是否合理。'))
     } finally {
       setCreatingImportSession(false)
     }
@@ -568,7 +576,11 @@ export function ProjectWorkspacePage() {
   async function handleSelectImportTemplate(templateId: string) {
     if (!importSession) return
     try {
-      const response = await api.put<ImportSession>(`/import-sessions/${importSession.id}/template`, { template_id: templateId })
+      const response = await api.put<ImportSession>(
+        `/import-sessions/${importSession.id}/template`,
+        { template_id: templateId },
+        { timeout: IMPORT_REQUEST_TIMEOUT_MS },
+      )
       setImportSession(response.data)
       messageApi.success('解析模板已更新。')
     } catch (error) {
@@ -580,7 +592,11 @@ export function ProjectWorkspacePage() {
     if (!importSession) return
     setApplyingImportCleaning(true)
     try {
-      const response = await api.put<ImportSession>(`/import-sessions/${importSession.id}/cleaning-options`, { cleaning_options: options })
+      const response = await api.put<ImportSession>(
+        `/import-sessions/${importSession.id}/cleaning-options`,
+        { cleaning_options: options },
+        { timeout: IMPORT_REQUEST_TIMEOUT_MS },
+      )
       setImportSession(response.data)
       messageApi.success('导入清洗已应用，预览已刷新。')
     } catch (error) {
@@ -594,7 +610,11 @@ export function ProjectWorkspacePage() {
     if (!project || !importSession) return
     setConfirmingImportSession(true)
     try {
-      const response = await api.post<ImportSessionConfirmRead>(`/import-sessions/${importSession.id}/confirm`)
+      const response = await api.post<ImportSessionConfirmRead>(
+        `/import-sessions/${importSession.id}/confirm`,
+        undefined,
+        { timeout: IMPORT_REQUEST_TIMEOUT_MS },
+      )
       setImportSession(null)
       await loadDatasets(project.id, response.data.import_result.dataset_version.id)
       messageApi.success(`导入成功，已生成 ${response.data.import_result.dataset_version.version_name}。`)
