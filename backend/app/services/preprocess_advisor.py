@@ -5,6 +5,7 @@ from typing import Any
 
 import pandas as pd
 from fastapi import HTTPException
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
@@ -142,21 +143,28 @@ def run_preprocess_training_advisor_job(job_id: int, advisor_run_id: int) -> Non
 
             payload = PreprocessTrainingAdvisorRequest(**advisor_run.request_payload)
             result = analyze_preprocess_training_advisor(db, payload, analysis_mode="sampled_trainability")
+            result_json = jsonable_encoder(result)
 
             advisor_run.status = "completed"
-            advisor_run.result_json = result
+            advisor_run.result_json = result_json
             advisor_run.sample_size = int(result.get("sample_size", 0))
             db.add(advisor_run)
             db.commit()
 
             _set_job_state(db, job, status="completed", progress=100, message="Sampled trainability analysis completed")
         except HTTPException as exc:
+            db.rollback()
+            advisor_run = db.get(PreprocessAdvisorRun, advisor_run_id)
             advisor_run.status = "failed"
+            advisor_run.result_json = {}
             db.add(advisor_run)
             db.commit()
             _set_job_state(db, job, status="failed", progress=100, message=str(exc.detail))
         except Exception as exc:
+            db.rollback()
+            advisor_run = db.get(PreprocessAdvisorRun, advisor_run_id)
             advisor_run.status = "failed"
+            advisor_run.result_json = {}
             db.add(advisor_run)
             db.commit()
             _set_job_state(db, job, status="failed", progress=100, message=f"Trainability analysis failed: {exc}")
