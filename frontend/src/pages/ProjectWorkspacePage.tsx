@@ -603,7 +603,12 @@ export function ProjectWorkspacePage() {
   const handleFeatureHandoff = useCallback((handoff: FeatureHandoff) => {
     setFeatureHandoff(handoff)
     handleTabChange('feature')
-    messageApi.success('已带入行为追踪特征推荐方案，可在特征页确认或微调。')
+    const label = handoff.task_category === 'text_complexity'
+      ? '文本特征'
+      : handoff.task_category === 'high_cardinality'
+        ? '高基数特征'
+        : '行为追踪特征'
+    messageApi.success(`已带入${label}推荐方案，可在特征页确认或微调。`)
   }, [handleTabChange, messageApi])
 
   useEffect(() => {

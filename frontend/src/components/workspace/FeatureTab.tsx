@@ -32,6 +32,8 @@ import type {
   DatasetVersion,
   FeaturePipeline,
   FeaturePreviewRead,
+  FeatureTaskCategory,
+  FeatureTaskCategoryId,
   FeatureStep,
   FeatureStepPreviewRead,
   FeatureTemplate,
@@ -85,8 +87,13 @@ export type FeatureFormValues = {
   mode: 'quick' | 'advanced'
   name: string
   preprocessPipelineId?: number
-  quickStrategy?: 'template' | 'behavior_tracking'
+  quickStrategy?: 'template' | FeatureTaskCategoryId
   templateId?: string
+  quickTaskConfig?: {
+    targetColumns: string[]
+    timeColumn?: string
+    groupColumns: string[]
+  }
   behaviorTracking?: {
     trackingType: 'flow' | 'entity'
     groupKey?: string
@@ -236,9 +243,42 @@ const LOG_TYPE_OPTIONS = [
   { label: '通用日志', value: 'generic_log' },
 ]
 
-const QUICK_STRATEGY_OPTIONS = [
-  { label: '日志模板', value: 'template' },
-  { label: '行为追踪', value: 'behavior_tracking' },
+const FEATURE_TASK_CATEGORIES: FeatureTaskCategory[] = [
+  {
+    id: 'text_complexity',
+    title: '文本复杂度特征',
+    description: '适合原始大文本、命令、URL、域名等字段。把原值转成长度、熵、模式命中等更适合训练的数值特征。',
+    recommended_for: ['raw_message', 'message', 'url', 'domain', 'helo', 'user_agent'],
+    default_recipe_ids: ['text_complexity_core'],
+  },
+  {
+    id: 'high_cardinality',
+    title: '高基数 / 类别特征',
+    description: '适合唯一值很多的类别字段。优先生成频次、窗口活跃度等统计特征，而不是直接编码原值。',
+    recommended_for: ['request_id', 'session_id', 'user_id', 'path', 'mail_from'],
+    default_recipe_ids: ['high_cardinality_frequency', 'high_cardinality_window'],
+  },
+  {
+    id: 'time_behavior',
+    title: '时间行为特征',
+    description: '适合所有已经标准化好的时间字段。用来生成时间拆分、时间窗活跃度和突增信号。',
+    recommended_for: ['event_time', 'timestamp', 'login_time'],
+    default_recipe_ids: ['time_behavior_core'],
+  },
+  {
+    id: 'behavior_tracking',
+    title: '行为追踪特征',
+    description: '适合 request/session 等流程 ID，或 user/host/source_ip 等主体 ID。先按行为追踪意图配置，再由系统生成步骤链。',
+    recommended_for: ['request_id', 'session_id', 'source_ip', 'user_id', 'host_id'],
+    default_recipe_ids: ['behavior_tracking_base', 'behavior_tracking_window', 'behavior_tracking_sequence'],
+  },
+  {
+    id: 'numeric_statistics',
+    title: '数值统计特征',
+    description: '适合 bytes、duration、latency 等数值字段。优先做分桶、标准化和简单统计，提升异常检测稳定性。',
+    recommended_for: ['bytes', 'duration', 'latency', 'packet_count'],
+    default_recipe_ids: ['numeric_statistics_core'],
+  },
 ]
 
 const BEHAVIOR_RECIPE_OPTIONS = [
@@ -247,14 +287,19 @@ const BEHAVIOR_RECIPE_OPTIONS = [
   { label: '顺序特征', value: 'sequence' },
 ]
 
+function isFeatureTaskCategoryId(value: string | undefined): value is FeatureTaskCategoryId {
+  return FEATURE_TASK_CATEGORIES.some((category) => category.id === value)
+}
+
 export function FeatureTab(props: Props) {
   const [form] = Form.useForm<FeatureFormValues>()
   const watchedValues = Form.useWatch([], form)
   const mode = watchedValues?.mode ?? 'quick'
-  const quickStrategy = watchedValues?.quickStrategy ?? (props.featureHandoff ? 'behavior_tracking' : 'template')
+  const quickStrategy = watchedValues?.quickStrategy ?? (isFeatureTaskCategoryId(props.featureHandoff?.task_category) ? props.featureHandoff.task_category : 'text_complexity')
   const selectedPreprocessPipelineId = watchedValues?.preprocessPipelineId
   const selectedTemplateId = watchedValues?.templateId
   const behaviorTracking = watchedValues?.behaviorTracking
+  const quickTaskConfig = watchedValues?.quickTaskConfig
 
   const availableColumns = useMemo(() => {
     if (!props.dataset) return []
@@ -280,9 +325,10 @@ export function FeatureTab(props: Props) {
     if (props.dataset) {
       form.setFieldsValue({
         mode: form.getFieldValue('mode') ?? 'quick',
-        quickStrategy: form.getFieldValue('quickStrategy') ?? (props.featureHandoff ? 'behavior_tracking' : 'template'),
+        quickStrategy: form.getFieldValue('quickStrategy') ?? (isFeatureTaskCategoryId(props.featureHandoff?.task_category) ? props.featureHandoff.task_category : 'text_complexity'),
         name: `${props.dataset.version_name}-features-${props.pipelines.length + 1}`,
         behaviorTracking: form.getFieldValue('behaviorTracking') ?? createBehaviorTrackingDefaults(props.featureHandoff, availableColumns),
+        quickTaskConfig: form.getFieldValue('quickTaskConfig') ?? createQuickTaskDefaults(props.featureHandoff, availableColumns),
         steps: form.getFieldValue('steps') ?? [],
         templateSaveLogType: inferLogType(props.dataset.parser_profile),
       })
@@ -305,8 +351,9 @@ export function FeatureTab(props: Props) {
     if (!props.featureHandoff) return
     form.setFieldsValue({
       mode: 'quick',
-      quickStrategy: 'behavior_tracking',
+      quickStrategy: isFeatureTaskCategoryId(props.featureHandoff.task_category) ? props.featureHandoff.task_category : 'behavior_tracking',
       behaviorTracking: createBehaviorTrackingDefaults(props.featureHandoff, availableColumns),
+      quickTaskConfig: createQuickTaskDefaults(props.featureHandoff, availableColumns),
     })
   }, [availableColumns, form, props.featureHandoff])
 
@@ -319,6 +366,15 @@ export function FeatureTab(props: Props) {
     () => describeBehaviorTrackingPlan(behaviorTracking, behaviorTrackingSteps),
     [behaviorTracking, behaviorTrackingSteps],
   )
+  const selectedTaskCategory = FEATURE_TASK_CATEGORIES.find((category) => category.id === quickStrategy) ?? null
+  const quickTaskSteps = useMemo(
+    () => buildQuickTaskSteps(quickStrategy, quickTaskConfig, availableColumns),
+    [availableColumns, quickStrategy, quickTaskConfig],
+  )
+  const quickTaskPreview = useMemo(
+    () => describeQuickTaskPlan(quickStrategy, quickTaskConfig, quickTaskSteps),
+    [quickStrategy, quickTaskConfig, quickTaskSteps],
+  )
 
   function handleSubmit(values: FeatureFormValues) {
     if (values.mode === 'quick' && values.quickStrategy === 'behavior_tracking') {
@@ -328,11 +384,12 @@ export function FeatureTab(props: Props) {
       })
       return
     }
-    if (values.mode === 'quick' && selectedTemplate) {
-      props.onRun({
-        ...values,
-        steps: selectedTemplate.steps.map(toDraftFromPersistedStep),
-      })
+    if (values.mode === 'quick' && values.quickStrategy === 'template' && selectedTemplate) {
+      props.onRun({ ...values, steps: selectedTemplate.steps.map(toDraftFromPersistedStep) })
+      return
+    }
+    if (values.mode === 'quick') {
+      props.onRun({ ...values, steps: quickTaskSteps })
       return
     }
     props.onRun(values)
@@ -379,9 +436,48 @@ export function FeatureTab(props: Props) {
 
                 {mode === 'quick' ? (
                   <Space direction="vertical" size={16} className="full-width">
-                    <Form.Item name="quickStrategy" label="快速模式入口">
-                      <Segmented block options={QUICK_STRATEGY_OPTIONS} />
-                    </Form.Item>
+                    <Card size="small" className="nested-card" title="任务入口">
+                      <Space direction="vertical" size={16} className="full-width">
+                        <Alert
+                          type="info"
+                          showIcon
+                          message="先选择字段问题，再让系统给出推荐配方。"
+                          description="首屏按任务入口组织，不再要求你先理解算子名。点击对应入口后，系统会自动生成推荐草稿，必要时再进入高级微调。"
+                        />
+                        <div className="task-category-grid">
+                          {FEATURE_TASK_CATEGORIES.map((category) => (
+                            <Card
+                              key={category.id}
+                              size="small"
+                              hoverable
+                              className={`task-category-card ${quickStrategy === category.id ? 'is-active' : ''}`}
+                              onClick={() => form.setFieldValue('quickStrategy', category.id)}
+                            >
+                              <Space direction="vertical" size={8} className="full-width">
+                                <Text strong>{category.title}</Text>
+                                <Text type="secondary">{category.description}</Text>
+                                <div className="tag-wall">
+                                  {category.recommended_for.map((item) => (
+                                    <Tag key={`${category.id}-${item}`}>{item}</Tag>
+                                  ))}
+                                </div>
+                              </Space>
+                            </Card>
+                          ))}
+                          <Card
+                            size="small"
+                            hoverable
+                            className={`task-category-card ${quickStrategy === 'template' ? 'is-active' : ''}`}
+                            onClick={() => form.setFieldValue('quickStrategy', 'template')}
+                          >
+                            <Space direction="vertical" size={8} className="full-width">
+                              <Text strong>日志模板</Text>
+                              <Text type="secondary">如果你已经有一套现成模板，仍然可以直接套用。</Text>
+                            </Space>
+                          </Card>
+                        </div>
+                      </Space>
+                    </Card>
 
                     {quickStrategy === 'behavior_tracking' ? (
                       <Card size="small" className="nested-card" title="行为追踪特征">
@@ -434,7 +530,7 @@ export function FeatureTab(props: Props) {
                           </Card>
                         </Space>
                       </Card>
-                    ) : (
+                    ) : quickStrategy === 'template' ? (
                       <Card size="small" className="nested-card" title="日志类型模板">
                         <Space direction="vertical" size={16} className="full-width">
                           <Form.Item name="templateId" label="选择模板" rules={[{ required: quickStrategy === 'template', message: '请选择一个模板' }]}>
@@ -472,6 +568,62 @@ export function FeatureTab(props: Props) {
                           ) : (
                             <Text type="secondary">选择模板后，这里会显示模板说明和字段匹配结果。</Text>
                           )}
+                        </Space>
+                      </Card>
+                    ) : (
+                      <Card size="small" className="nested-card" title={selectedTaskCategory?.title ?? '推荐特征配方'}>
+                        <Space direction="vertical" size={16} className="full-width">
+                          {props.featureHandoff && props.featureHandoff.task_category === quickStrategy ? (
+                            <Alert
+                              type="info"
+                              showIcon
+                              message={`已从预处理页带入 ${props.featureHandoff.recommended_group_key} 的推荐方案`}
+                              description="这套配置已经根据字段问题做了预设，你可以直接运行，也可以微调目标字段和时间字段。"
+                              action={<Button size="small" onClick={props.onClearFeatureHandoff}>清除承接</Button>}
+                            />
+                          ) : null}
+                          <Text>{selectedTaskCategory?.description}</Text>
+                          <div className="step-grid">
+                            <Form.Item
+                              name={['quickTaskConfig', 'targetColumns']}
+                              label="目标字段"
+                              rules={[{ required: quickStrategy !== 'time_behavior', message: '请选择至少一个目标字段' }]}
+                            >
+                              <Select mode="multiple" allowClear options={availableColumns.map((column) => ({ label: column, value: column }))} />
+                            </Form.Item>
+                            <Form.Item
+                              name={['quickTaskConfig', 'timeColumn']}
+                              label="时间字段"
+                              rules={[{ required: quickStrategy === 'time_behavior' || quickStrategy === 'high_cardinality', message: '请选择时间字段' }]}
+                            >
+                              <Select allowClear options={availableColumns.map((column) => ({ label: column, value: column }))} />
+                            </Form.Item>
+                            <Form.Item name={['quickTaskConfig', 'groupColumns']} label="上下文字段 / 分组字段">
+                              <Select mode="multiple" allowClear options={availableColumns.map((column) => ({ label: column, value: column }))} />
+                            </Form.Item>
+                          </div>
+                          <Card size="small" type="inner" title="推荐说明">
+                            <Space direction="vertical" size={8} className="full-width">
+                              <Text>{quickTaskPreview.description}</Text>
+                              <div className="tag-wall">
+                                {quickTaskPreview.highlights.map((item) => (
+                                  <Tag color="cyan" key={item}>{item}</Tag>
+                                ))}
+                              </div>
+                              <div className="tag-wall">
+                                {quickTaskPreview.generatedColumns.length ? (
+                                  quickTaskPreview.generatedColumns.map((column) => (
+                                    <Tag color="green" key={column}>{column}</Tag>
+                                  ))
+                                ) : (
+                                  <Text type="secondary">先选择字段后，这里会展示建议新增的特征列。</Text>
+                                )}
+                              </div>
+                            </Space>
+                          </Card>
+                          <Button onClick={() => form.setFieldsValue({ mode: 'advanced', steps: quickTaskSteps })}>
+                            带入高级微调
+                          </Button>
                         </Space>
                       </Card>
                     )}
@@ -851,6 +1003,166 @@ function createBehaviorTrackingDefaults(featureHandoff: FeatureHandoff | null, a
     targetColumns: recommendedTargets,
     recipeKinds,
   }
+}
+
+function createQuickTaskDefaults(featureHandoff: FeatureHandoff | null, availableColumns: string[]) {
+  return {
+    targetColumns: featureHandoff?.recommended_group_key && availableColumns.includes(featureHandoff.recommended_group_key)
+      ? [featureHandoff.recommended_group_key]
+      : [],
+    timeColumn: featureHandoff?.recommended_time_columns.find((column) => availableColumns.includes(column)),
+    groupColumns: (featureHandoff?.recommended_target_columns ?? []).filter((column) => availableColumns.includes(column)).slice(0, 2),
+  }
+}
+
+function buildQuickTaskSteps(
+  quickStrategy: FeatureFormValues['quickStrategy'] | undefined,
+  quickTaskConfig: FeatureFormValues['quickTaskConfig'] | undefined,
+  availableColumns: string[],
+) {
+  const targetColumns = (quickTaskConfig?.targetColumns ?? []).filter((column) => availableColumns.includes(column))
+  const groupColumns = (quickTaskConfig?.groupColumns ?? []).filter((column) => availableColumns.includes(column))
+  const timeColumn = quickTaskConfig?.timeColumn && availableColumns.includes(quickTaskConfig.timeColumn)
+    ? quickTaskConfig.timeColumn
+    : undefined
+
+  if (!targetColumns.length) {
+    return []
+  }
+
+  if (quickStrategy === 'text_complexity') {
+    return [
+      createFeatureTaskStep('text_length', targetColumns),
+      createFeatureTaskStep('byte_length', targetColumns),
+      createFeatureTaskStep('token_count', targetColumns),
+      createFeatureTaskStep('shannon_entropy', targetColumns),
+      createFeatureTaskStep('keyword_count', targetColumns, { keywordsText: 'error,failed,timeout,exception,denied' }),
+      createFeatureTaskStep('pattern_flags', targetColumns),
+    ]
+  }
+
+  if (quickStrategy === 'high_cardinality') {
+    const steps = [
+      createFeatureTaskStep('frequency_encode', targetColumns),
+    ]
+    if (timeColumn) {
+      steps.push(
+        createFeatureTaskStep('time_window_count', [targetColumns[0]], { timeColumn, windowMinutes: 15 }),
+        createFeatureTaskStep('window_spike_flag', [targetColumns[0]], { timeColumn, windowMinutes: 15, threshold: 10 }),
+      )
+      if (groupColumns[0]) {
+        steps.push(
+          createFeatureTaskStep('window_target_unique_count', [targetColumns[0]], {
+            timeColumn,
+            targetColumn: groupColumns[0],
+            windowMinutes: 15,
+          }),
+        )
+      }
+    }
+    return steps
+  }
+
+  if (quickStrategy === 'time_behavior') {
+    if (!timeColumn && !targetColumns[0]) {
+      return []
+    }
+    const resolvedTimeColumn = timeColumn ?? targetColumns[0]
+    const steps = [createFeatureTaskStep('derive_time_parts', [resolvedTimeColumn])]
+    if (groupColumns[0]) {
+      steps.push(
+        createFeatureTaskStep('time_window_count', [groupColumns[0]], { timeColumn: resolvedTimeColumn, windowMinutes: 15 }),
+        createFeatureTaskStep('window_spike_flag', [groupColumns[0]], { timeColumn: resolvedTimeColumn, windowMinutes: 15, threshold: 10 }),
+      )
+    }
+    return steps
+  }
+
+  if (quickStrategy === 'numeric_statistics') {
+    return [
+      createFeatureTaskStep('numeric_bucket', targetColumns, { bins: 5 }),
+      createFeatureTaskStep('numeric_scale', targetColumns, { method: 'zscore' }),
+    ]
+  }
+
+  return []
+}
+
+function createFeatureTaskStep(
+  stepType: DraftFeatureStepType,
+  columns: string[],
+  params: Partial<FeatureStepDraft['params']> = {},
+): FeatureStepDraft {
+  return {
+    ...createFeatureStepDraft(stepType),
+    input_selector: {
+      ...createFeatureStepDraft(stepType).input_selector,
+      mode: 'explicit',
+      columns,
+    },
+    params: {
+      ...createFeatureStepDraft(stepType).params,
+      ...params,
+    },
+    output_mode: {
+      ...createFeatureStepDraft(stepType).output_mode,
+      mode: (getOutputModeOptions(stepType)[0]?.value ?? 'append_new_columns') as 'append_new_columns' | 'replace_existing',
+    },
+  }
+}
+
+function describeQuickTaskPlan(
+  quickStrategy: FeatureFormValues['quickStrategy'] | undefined,
+  quickTaskConfig: FeatureFormValues['quickTaskConfig'] | undefined,
+  steps: FeatureStepDraft[],
+) {
+  const targetColumns = quickTaskConfig?.targetColumns ?? []
+  const timeColumn = quickTaskConfig?.timeColumn
+  const groupColumns = quickTaskConfig?.groupColumns ?? []
+
+  if (quickStrategy === 'text_complexity') {
+    return {
+      description: '系统会把原始文本字段转成长度、熵、关键词命中和模式标记等更适合异常检测的数值特征。',
+      highlights: [`目标字段: ${targetColumns.join(', ') || '待选择'}`],
+      generatedColumns: steps.map(describeGeneratedColumn),
+    }
+  }
+  if (quickStrategy === 'high_cardinality') {
+    return {
+      description: '系统会优先生成频次、窗口活跃度和目标分散度等统计特征，避免直接编码高基数原值。',
+      highlights: [
+        `目标字段: ${targetColumns.join(', ') || '待选择'}`,
+        timeColumn ? `时间字段: ${timeColumn}` : '可选时间字段可进一步生成窗口行为特征',
+      ],
+      generatedColumns: steps.map(describeGeneratedColumn),
+    }
+  }
+  if (quickStrategy === 'time_behavior') {
+    return {
+      description: '系统会先生成时间拆分特征，再按需要补时间窗活跃度和突增信号。',
+      highlights: [
+        `时间字段: ${timeColumn || targetColumns[0] || '待选择'}`,
+        groupColumns[0] ? `分组字段: ${groupColumns.join(', ')}` : '可选分组字段可进一步生成窗口行为',
+      ],
+      generatedColumns: steps.map(describeGeneratedColumn),
+    }
+  }
+  if (quickStrategy === 'numeric_statistics') {
+    return {
+      description: '系统会把数值字段做分桶和标准化，让它们更容易被异常检测模型利用。',
+      highlights: [`目标字段: ${targetColumns.join(', ') || '待选择'}`],
+      generatedColumns: steps.map(describeGeneratedColumn),
+    }
+  }
+  return {
+    description: '选择任务入口后，这里会展示推荐生成的特征和业务解释。',
+    highlights: [],
+    generatedColumns: steps.map(describeGeneratedColumn),
+  }
+}
+
+function describeGeneratedColumn(step: FeatureStepDraft) {
+  return step.output_mode.output_column || `${(step.input_selector.columns ?? []).join('_')}${step.output_mode.suffix ?? ''}`
 }
 
 function buildBehaviorTrackingSteps(

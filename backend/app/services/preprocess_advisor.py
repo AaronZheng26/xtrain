@@ -39,6 +39,32 @@ REASON_TEXTS = {
     "cast_datetime": "字段内容看起来是时间字符串，建议先转成时间类型。",
     "keep": "字段当前可以直接作为训练候选输入。",
 }
+ISSUE_GROUP_DEFINITIONS = {
+    "direct_trainable": {
+        "title": "可直接进入训练",
+        "description": "这些字段当前已经比较适合作为训练候选输入，可以先保留。",
+        "recommended_action": "keep",
+        "handoff_target": None,
+    },
+    "needs_cleaning": {
+        "title": "建议先清洗",
+        "description": "这些字段在进入训练前还需要做补空值、转类型等基础整理。",
+        "recommended_action": "clean_first",
+        "handoff_target": None,
+    },
+    "route_to_features": {
+        "title": "建议改走特征工程",
+        "description": "这些字段更适合先生成统计、复杂度或行为追踪特征，而不是直接训练原值。",
+        "recommended_action": "move_to_feature_engineering",
+        "handoff_target": "feature",
+    },
+    "remove_from_output": {
+        "title": "建议移除或从训练中排除",
+        "description": "这些字段容易造成泄漏、没有有效信号，或会明显干扰训练，建议不要继续沿主链路使用。",
+        "recommended_action": "exclude_or_drop",
+        "handoff_target": None,
+    },
+}
 FLOW_TRACKING_HINTS = ("request", "trace", "session", "span", "transaction", "correlation", "flow")
 ENTITY_TRACKING_HINTS = ("userid", "user", "device", "host", "account", "sourceip", "srcip", "clientip")
 TRACKING_TARGET_HINTS = (
@@ -98,6 +124,7 @@ def analyze_preprocess_training_advisor(
             "analysis_basis": "当前步骤链采样分析" if analysis_mode == "sampled_trainability" else "当前步骤链快速规则分析",
         },
         "field_advice": field_advice,
+        "issue_groups": _build_issue_groups(field_advice),
         "recommended_steps": recommended_steps,
         "analysis_mode": analysis_mode,
         "sample_size": int(len(sampled.index)),
@@ -258,8 +285,8 @@ def _build_field_advice(
     frame: pd.DataFrame,
     target_column: str | None,
     exclusion_reasons: dict[str, str],
-) -> list[dict[str, str]]:
-    advice_list: list[dict[str, str]] = []
+) -> list[dict[str, Any]]:
+    advice_list: list[dict[str, Any]] = []
 
     for column in frame.columns:
         series = frame[column]
@@ -366,27 +393,50 @@ def _build_feature_handoff(
         return None
 
     tracking_type = _infer_tracking_type(column)
-    if not tracking_type:
-        return None
-
     time_columns = _find_time_columns(frame, exclude_column=column)
-    if not time_columns:
-        return None
 
-    target_columns = _find_tracking_target_columns(frame, exclude_columns={column, *time_columns[:1]})
-    return {
-        "issue_type": "behavior_tracking",
-        "tracking_type": tracking_type,
-        "recommended_group_key": column,
-        "recommended_time_columns": time_columns,
-        "recommended_target_columns": target_columns,
-        "recipe_ids": (
-            ["group_frequency", "group_duration", "group_event_order", "time_since_previous_event"]
-            if tracking_type == "flow"
-            else ["group_frequency", "time_window_count", "window_target_unique_count", "window_spike_flag"]
-        ),
-        "reason_code": reason_code,
-    }
+    if tracking_type and time_columns:
+        target_columns = _find_tracking_target_columns(frame, exclude_columns={column, *time_columns[:1]})
+        return {
+            "issue_type": "behavior_tracking",
+            "task_category": "behavior_tracking",
+            "tracking_type": tracking_type,
+            "recommended_group_key": column,
+            "recommended_time_columns": time_columns,
+            "recommended_target_columns": target_columns,
+            "recipe_ids": (
+                ["behavior_tracking_base", "behavior_tracking_sequence"]
+                if tracking_type == "flow"
+                else ["behavior_tracking_base", "behavior_tracking_window"]
+            ),
+            "reason_code": reason_code,
+        }
+
+    if reason_code == "raw_text_column":
+        return {
+            "issue_type": "raw_text_column",
+            "task_category": "text_complexity",
+            "tracking_type": "",
+            "recommended_group_key": column,
+            "recommended_time_columns": [],
+            "recommended_target_columns": [],
+            "recipe_ids": ["text_complexity_core"],
+            "reason_code": reason_code,
+        }
+
+    if reason_code == "high_cardinality":
+        return {
+            "issue_type": "high_cardinality",
+            "task_category": "high_cardinality",
+            "tracking_type": "",
+            "recommended_group_key": column,
+            "recommended_time_columns": time_columns,
+            "recommended_target_columns": _find_tracking_target_columns(frame, exclude_columns={column}),
+            "recipe_ids": ["high_cardinality_frequency", "high_cardinality_window"],
+            "reason_code": reason_code,
+        }
+
+    return None
 
 
 def _infer_tracking_type(column: str) -> str | None:
@@ -444,7 +494,7 @@ def _find_tracking_target_columns(frame: pd.DataFrame, *, exclude_columns: set[s
     return [column for _, column in candidates[:5]]
 
 
-def _build_recommended_steps(frame: pd.DataFrame, field_advice: list[dict[str, str]]) -> list[dict[str, Any]]:
+def _build_recommended_steps(frame: pd.DataFrame, field_advice: list[dict[str, Any]]) -> list[dict[str, Any]]:
     advice_by_action: dict[str, list[str]] = {}
     for advice in field_advice:
         advice_by_action.setdefault(advice["recommended_action"], []).append(advice["field"])
@@ -552,6 +602,43 @@ def _build_recommended_steps(frame: pd.DataFrame, field_advice: list[dict[str, s
         )
 
     return recommendations
+
+
+def _build_issue_groups(field_advice: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped_fields = {
+        "direct_trainable": [],
+        "needs_cleaning": [],
+        "route_to_features": [],
+        "remove_from_output": [],
+    }
+
+    for advice in field_advice:
+        action = advice["recommended_action"]
+        if action == "keep":
+            grouped_fields["direct_trainable"].append(advice["field"])
+        elif action in {"fill_null", "cast_numeric", "cast_datetime"}:
+            grouped_fields["needs_cleaning"].append(advice["field"])
+        elif action == "move_to_feature_engineering":
+            grouped_fields["route_to_features"].append(advice["field"])
+        elif action in {"exclude_column", "drop_from_training"}:
+            grouped_fields["remove_from_output"].append(advice["field"])
+
+    issue_groups: list[dict[str, Any]] = []
+    for issue_type, fields in grouped_fields.items():
+        if not fields:
+            continue
+        definition = ISSUE_GROUP_DEFINITIONS[issue_type]
+        issue_groups.append(
+            {
+                "issue_type": issue_type,
+                "title": definition["title"],
+                "description": definition["description"],
+                "fields": fields,
+                "recommended_action": definition["recommended_action"],
+                "handoff_target": definition["handoff_target"],
+            }
+        )
+    return issue_groups
 
 
 def _build_recommended_step(

@@ -219,8 +219,18 @@ export type FieldAdvice = {
   feature_handoff?: FeatureHandoff | null
 }
 
+export type PreprocessFieldIssueGroup = {
+  issue_type: string
+  title: string
+  description: string
+  fields: string[]
+  recommended_action: string
+  handoff_target?: string | null
+}
+
 export type FeatureHandoff = {
-  issue_type: 'behavior_tracking' | string
+  issue_type: 'behavior_tracking' | 'raw_text_column' | 'high_cardinality' | string
+  task_category?: 'text_complexity' | 'high_cardinality' | 'time_behavior' | 'behavior_tracking' | 'numeric_statistics' | string
   tracking_type: 'flow' | 'entity' | string
   recommended_group_key: string
   recommended_time_columns: string[]
@@ -250,6 +260,7 @@ export type PreprocessTrainingAdvisorSummary = {
 export type PreprocessTrainingAdvisorRead = {
   summary: PreprocessTrainingAdvisorSummary
   field_advice: FieldAdvice[]
+  issue_groups: PreprocessFieldIssueGroup[]
   recommended_steps: RecommendedPreprocessStepDraft[]
   analysis_mode: 'quick' | 'sampled_trainability' | string
   sample_size: number
@@ -325,6 +336,30 @@ export type FeatureTemplate = {
   }
   created_at?: string | null
   updated_at?: string | null
+}
+
+export type FeatureTaskCategoryId =
+  | 'text_complexity'
+  | 'high_cardinality'
+  | 'time_behavior'
+  | 'behavior_tracking'
+  | 'numeric_statistics'
+
+export type FeatureTaskCategory = {
+  id: FeatureTaskCategoryId
+  title: string
+  description: string
+  recommended_for: string[]
+  default_recipe_ids: string[]
+}
+
+export type FeatureRecipe = {
+  id: string
+  task_category: FeatureTaskCategoryId
+  title: string
+  description: string
+  generated_feature_descriptions: string[]
+  recommended_steps: FeatureStep[]
 }
 
 export type FeatureStepPreviewRead = {

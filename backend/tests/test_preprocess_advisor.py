@@ -6,7 +6,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.services.preprocess_advisor import _build_field_advice, _build_recommended_steps
+from app.services.preprocess_advisor import _build_field_advice, _build_issue_groups, _build_recommended_steps
 
 
 class PreprocessAdvisorTests(unittest.TestCase):
@@ -44,12 +44,21 @@ class PreprocessAdvisorTests(unittest.TestCase):
         self.assertEqual(advice_by_field["request_id"]["status"], "suspected_id")
         self.assertEqual(advice_by_field["request_id"]["recommended_action"], "move_to_feature_engineering")
         self.assertEqual(advice_by_field["request_id"]["feature_handoff"]["tracking_type"], "flow")
+        self.assertEqual(advice_by_field["request_id"]["feature_handoff"]["task_category"], "behavior_tracking")
         self.assertIn("event_time_text", advice_by_field["request_id"]["feature_handoff"]["recommended_time_columns"])
         self.assertEqual(advice_by_field["raw_message"]["recommended_action"], "move_to_feature_engineering")
+        self.assertEqual(advice_by_field["raw_message"]["feature_handoff"]["task_category"], "text_complexity")
         self.assertEqual(advice_by_field["metric_text"]["recommended_action"], "cast_numeric")
         self.assertEqual(advice_by_field["event_time_text"]["recommended_action"], "cast_datetime")
         self.assertEqual(advice_by_field["sparse_numeric"]["recommended_action"], "fill_null")
         self.assertEqual(advice_by_field["constant_field"]["recommended_action"], "exclude_column")
+
+        issue_groups = _build_issue_groups(advice)
+        issue_groups_by_type = {item["issue_type"]: item for item in issue_groups}
+        self.assertIn("request_id", issue_groups_by_type["route_to_features"]["fields"])
+        self.assertIn("raw_message", issue_groups_by_type["route_to_features"]["fields"])
+        self.assertIn("metric_text", issue_groups_by_type["needs_cleaning"]["fields"])
+        self.assertIn("constant_field", issue_groups_by_type["remove_from_output"]["fields"])
 
     def test_recommended_steps_group_fill_cast_and_select_actions(self):
         frame = pd.DataFrame(

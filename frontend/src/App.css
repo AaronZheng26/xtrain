@@ -241,6 +241,32 @@
   gap: 0 16px;
 }
 
+.wizard-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.issue-bucket-grid,
+.advisor-issue-grid,
+.task-category-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.issue-bucket-card.ant-card,
+.issue-group-card.ant-card,
+.task-category-card.ant-card {
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(248, 251, 254, 0.98), rgba(255, 255, 255, 0.98));
+}
+
+.task-category-card.is-active {
+  border-color: rgba(22, 119, 255, 0.45);
+  box-shadow: 0 0 0 3px rgba(22, 119, 255, 0.08);
+}
+
 .detail-panel.ant-card {
   position: sticky;
   top: 24px;
@@ -400,6 +426,12 @@
   }
 
   .step-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .issue-bucket-grid,
+  .advisor-issue-grid,
+  .task-category-grid {
     grid-template-columns: 1fr;
   }
 

@@ -82,6 +82,15 @@ class FieldAdviceRead(BaseModel):
     feature_handoff: dict[str, Any] | None = None
 
 
+class PreprocessFieldIssueGroupRead(BaseModel):
+    issue_type: str
+    title: str
+    description: str
+    fields: list[str] = Field(default_factory=list)
+    recommended_action: str
+    handoff_target: str | None = None
+
+
 class RecommendedPreprocessStepDraftRead(BaseModel):
     recommendation_id: str
     title: str
@@ -103,6 +112,7 @@ class PreprocessTrainingAdvisorSummaryRead(BaseModel):
 class PreprocessTrainingAdvisorRead(BaseModel):
     summary: PreprocessTrainingAdvisorSummaryRead
     field_advice: list[FieldAdviceRead]
+    issue_groups: list[PreprocessFieldIssueGroupRead] = Field(default_factory=list)
     recommended_steps: list[RecommendedPreprocessStepDraftRead] = Field(default_factory=list)
     analysis_mode: str
     sample_size: int
