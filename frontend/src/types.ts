@@ -216,6 +216,17 @@ export type FieldAdvice = {
   reason_text: string
   recommended_action: string
   confidence: 'high' | 'medium' | 'low' | string
+  feature_handoff?: FeatureHandoff | null
+}
+
+export type FeatureHandoff = {
+  issue_type: 'behavior_tracking' | string
+  tracking_type: 'flow' | 'entity' | string
+  recommended_group_key: string
+  recommended_time_columns: string[]
+  recommended_target_columns: string[]
+  recipe_ids: string[]
+  reason_code?: string
 }
 
 export type RecommendedPreprocessStepDraft = {

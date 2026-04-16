@@ -79,6 +79,7 @@ class FieldAdviceRead(BaseModel):
     reason_text: str
     recommended_action: str
     confidence: str
+    feature_handoff: dict[str, Any] | None = None
 
 
 class RecommendedPreprocessStepDraftRead(BaseModel):

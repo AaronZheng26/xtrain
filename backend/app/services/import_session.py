@@ -271,6 +271,7 @@ def confirm_import_session(db: Session, session_id: int) -> tuple[ImportSession,
 
     import_session.status = "confirmed"
     import_session.confirmed_dataset_version_id = dataset_version.id
+    import_session.parse_options = _clear_import_session_artifacts(import_session.parse_options)
     db.add(import_session)
     db.commit()
     db.refresh(import_session)
@@ -559,6 +560,17 @@ def _serialize_parse_options(parse_options: dict[str, Any] | None) -> dict[str, 
     for key in (STAGING_PATH_KEY, BASE_SCHEMA_KEY, BASE_DETECTED_FIELDS_KEY):
         parse_options.pop(key, None)
     return parse_options
+
+
+def _clear_import_session_artifacts(parse_options: dict[str, Any] | None) -> dict[str, Any]:
+    next_options = dict(parse_options or {})
+    staging_path = next_options.get(STAGING_PATH_KEY)
+    if staging_path:
+        resolved = get_settings().resolve_storage_path(str(staging_path))
+        resolved.unlink(missing_ok=True)
+    for key in (STAGING_PATH_KEY, BASE_SCHEMA_KEY, BASE_DETECTED_FIELDS_KEY):
+        next_options.pop(key, None)
+    return next_options
 
 
 def _suggest_field_mapping(schema: list[dict], detected: dict) -> dict[str, str | None]:

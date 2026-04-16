@@ -329,6 +329,93 @@ class PipelineStepTests(unittest.TestCase):
         self.assertEqual(int(with_spike.loc[0, "source_spike_15m"]), 1)
         self.assertEqual(int(with_spike.loc[3, "source_spike_15m"]), 0)
 
+    def test_behavior_tracking_feature_steps_generate_sequence_and_window_columns(self):
+        frame = pd.DataFrame(
+            {
+                "event_time": pd.to_datetime(
+                    [
+                        "2026-04-10 10:01:00",
+                        "2026-04-10 10:03:00",
+                        "2026-04-10 10:05:00",
+                        "2026-04-10 10:16:00",
+                    ]
+                ),
+                "request_id": ["req-1", "req-1", "req-1", "req-2"],
+                "status_code": ["200", "500", "500", "200"],
+                "path": ["/login", "/login", "/admin", "/health"],
+            }
+        )
+
+        with_duration = apply_feature_step(
+            frame,
+            {
+                "step_type": "group_duration",
+                "enabled": True,
+                "input_selector": {"mode": "explicit", "columns": ["request_id"]},
+                "params": {"time_column": "event_time"},
+                "output_mode": {"mode": "append_new_columns", "output_column": "request_duration_seconds"},
+            },
+        )
+        with_order = apply_feature_step(
+            with_duration,
+            {
+                "step_type": "group_event_order",
+                "enabled": True,
+                "input_selector": {"mode": "explicit", "columns": ["request_id"]},
+                "params": {"time_column": "event_time"},
+                "output_mode": {"mode": "append_new_columns", "output_column": "request_step_order"},
+            },
+        )
+        with_since_previous = apply_feature_step(
+            with_order,
+            {
+                "step_type": "time_since_previous_event",
+                "enabled": True,
+                "input_selector": {"mode": "explicit", "columns": ["request_id"]},
+                "params": {"time_column": "event_time"},
+                "output_mode": {"mode": "append_new_columns", "output_column": "seconds_since_previous"},
+            },
+        )
+        with_change_flag = apply_feature_step(
+            with_since_previous,
+            {
+                "step_type": "group_value_change_flag",
+                "enabled": True,
+                "input_selector": {"mode": "explicit", "columns": ["request_id"]},
+                "params": {"time_column": "event_time", "target_column": "status_code"},
+                "output_mode": {"mode": "append_new_columns", "output_column": "status_changed"},
+            },
+        )
+        with_window_unique = apply_feature_step(
+            with_change_flag,
+            {
+                "step_type": "window_target_unique_count",
+                "enabled": True,
+                "input_selector": {"mode": "explicit", "columns": ["request_id"]},
+                "params": {"time_column": "event_time", "target_column": "path", "window_minutes": 15},
+                "output_mode": {"mode": "append_new_columns", "output_column": "request_path_unique_15m"},
+            },
+        )
+        with_window_changes = apply_feature_step(
+            with_window_unique,
+            {
+                "step_type": "window_status_change_count",
+                "enabled": True,
+                "input_selector": {"mode": "explicit", "columns": ["request_id"]},
+                "params": {"time_column": "event_time", "target_column": "status_code", "window_minutes": 15},
+                "output_mode": {"mode": "append_new_columns", "output_column": "request_status_change_15m"},
+            },
+        )
+
+        self.assertEqual(float(with_window_changes.loc[0, "request_duration_seconds"]), 240.0)
+        self.assertEqual(int(with_window_changes.loc[2, "request_step_order"]), 3)
+        self.assertTrue(pd.isna(with_window_changes.loc[0, "seconds_since_previous"]))
+        self.assertEqual(float(with_window_changes.loc[2, "seconds_since_previous"]), 120.0)
+        self.assertEqual(int(with_window_changes.loc[0, "status_changed"]), 0)
+        self.assertEqual(int(with_window_changes.loc[1, "status_changed"]), 1)
+        self.assertEqual(int(with_window_changes.loc[2, "request_path_unique_15m"]), 2)
+        self.assertEqual(int(with_window_changes.loc[2, "request_status_change_15m"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

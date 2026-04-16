@@ -683,6 +683,62 @@ def _apply_single_step(frame: pd.DataFrame, step: dict[str, Any]) -> pd.DataFram
             step["output_mode"],
             "_unique_count",
         )
+    elif step_type == "group_duration":
+        group_columns = _require_minimum_columns(columns, 1, step_type)
+        time_column = _require_step_column(current, params.get("time_column"), "group_duration", "time_column")
+        transformed = _build_group_duration(current, group_columns, time_column)
+        current = _write_combined_output_series(
+            current,
+            [*group_columns, time_column],
+            transformed,
+            step["output_mode"],
+            "_duration_seconds",
+        )
+    elif step_type == "group_event_order":
+        group_columns = _require_minimum_columns(columns, 1, step_type)
+        time_column = _require_step_column(current, params.get("time_column"), "group_event_order", "time_column")
+        transformed = _build_group_event_order(current, group_columns, time_column)
+        current = _write_combined_output_series(
+            current,
+            [*group_columns, time_column],
+            transformed,
+            step["output_mode"],
+            "_event_order",
+        )
+    elif step_type == "time_since_previous_event":
+        group_columns = _require_minimum_columns(columns, 1, step_type)
+        time_column = _require_step_column(current, params.get("time_column"), "time_since_previous_event", "time_column")
+        transformed = _build_group_time_delta(current, group_columns, time_column, direction="previous")
+        current = _write_combined_output_series(
+            current,
+            [*group_columns, time_column],
+            transformed,
+            step["output_mode"],
+            "_seconds_since_previous",
+        )
+    elif step_type == "time_until_next_event":
+        group_columns = _require_minimum_columns(columns, 1, step_type)
+        time_column = _require_step_column(current, params.get("time_column"), "time_until_next_event", "time_column")
+        transformed = _build_group_time_delta(current, group_columns, time_column, direction="next")
+        current = _write_combined_output_series(
+            current,
+            [*group_columns, time_column],
+            transformed,
+            step["output_mode"],
+            "_seconds_until_next",
+        )
+    elif step_type == "group_value_change_flag":
+        group_columns = _require_minimum_columns(columns, 1, step_type)
+        time_column = _require_step_column(current, params.get("time_column"), "group_value_change_flag", "time_column")
+        target_column = _require_step_column(current, params.get("target_column"), "group_value_change_flag", "target_column")
+        transformed = _build_group_value_change_flag(current, group_columns, time_column, target_column)
+        current = _write_combined_output_series(
+            current,
+            [*group_columns, target_column, time_column],
+            transformed,
+            step["output_mode"],
+            "_value_changed",
+        )
     elif step_type == "time_window_count":
         time_column = _require_step_column(current, params.get("time_column"), "time_window_count", "time_column")
         window_minutes = max(int(params.get("window_minutes") or 15), 1)
@@ -718,6 +774,39 @@ def _apply_single_step(frame: pd.DataFrame, step: dict[str, Any]) -> pd.DataFram
             transformed,
             step["output_mode"],
             f"_{window_minutes}m_unique_count",
+        )
+    elif step_type == "window_target_unique_count":
+        time_column = _require_step_column(current, params.get("time_column"), "window_target_unique_count", "time_column")
+        target_column = _require_step_column(current, params.get("target_column"), "window_target_unique_count", "target_column")
+        window_minutes = max(int(params.get("window_minutes") or 15), 1)
+        group_columns = _require_minimum_columns(columns, 1, step_type)
+        parsed_time = pd.to_datetime(current[time_column], errors="coerce")
+        bucket = parsed_time.dt.floor(f"{window_minutes}min")
+        working = current[group_columns].copy()
+        working["__window_bucket"] = bucket
+        working[target_column] = current[target_column]
+        transformed = working.groupby([*group_columns, "__window_bucket"], dropna=False)[target_column].transform(
+            lambda series: series.nunique(dropna=True)
+        ).astype("Int64")
+        current = _write_combined_output_series(
+            current,
+            [*group_columns, target_column, time_column],
+            transformed,
+            step["output_mode"],
+            f"_{window_minutes}m_target_unique_count",
+        )
+    elif step_type == "window_status_change_count":
+        time_column = _require_step_column(current, params.get("time_column"), "window_status_change_count", "time_column")
+        target_column = _require_step_column(current, params.get("target_column"), "window_status_change_count", "target_column")
+        window_minutes = max(int(params.get("window_minutes") or 15), 1)
+        group_columns = _require_minimum_columns(columns, 1, step_type)
+        transformed = _build_window_status_change_count(current, group_columns, time_column, target_column, window_minutes)
+        current = _write_combined_output_series(
+            current,
+            [*group_columns, target_column, time_column],
+            transformed,
+            step["output_mode"],
+            f"_{window_minutes}m_status_change_count",
         )
     elif step_type == "window_spike_flag":
         time_column = _require_step_column(current, params.get("time_column"), "window_spike_flag", "time_column")
@@ -935,6 +1024,111 @@ def _write_multi_output_features(
         target_column = str(mapped_column).strip() if mapped_column else f"{source_column}_{feature_key}"
         frame[target_column] = series
     return frame
+
+
+def _build_group_duration(frame: pd.DataFrame, group_columns: list[str], time_column: str) -> pd.Series:
+    parsed_time = pd.to_datetime(frame[time_column], errors="coerce")
+    working = frame[group_columns].copy()
+    working["__time"] = parsed_time
+    return working.groupby(group_columns, dropna=False)["__time"].transform(_group_duration_seconds).astype("Float64")
+
+
+def _group_duration_seconds(series: pd.Series) -> float | None:
+    valid = series.dropna()
+    if valid.empty:
+        return None
+    return float((valid.max() - valid.min()).total_seconds())
+
+
+def _build_group_event_order(frame: pd.DataFrame, group_columns: list[str], time_column: str) -> pd.Series:
+    return _build_group_sorted_series(frame, group_columns, time_column, _compute_group_event_order)
+
+
+def _build_group_time_delta(
+    frame: pd.DataFrame,
+    group_columns: list[str],
+    time_column: str,
+    *,
+    direction: str,
+) -> pd.Series:
+    return _build_group_sorted_series(
+        frame,
+        group_columns,
+        time_column,
+        lambda working: _compute_group_time_delta(working, direction=direction),
+    )
+
+
+def _build_group_value_change_flag(
+    frame: pd.DataFrame,
+    group_columns: list[str],
+    time_column: str,
+    target_column: str,
+) -> pd.Series:
+    working = _build_group_sort_frame(frame, group_columns, time_column)
+    value_series = frame.loc[working["__original_index"], target_column].astype("string").fillna("__missing__")
+    previous_value = value_series.groupby(working["__group_key"], dropna=False).shift(1)
+    changed = ((previous_value.notna()) & (value_series != previous_value)).astype("Int64")
+    return changed.sort_index()
+
+
+def _build_window_status_change_count(
+    frame: pd.DataFrame,
+    group_columns: list[str],
+    time_column: str,
+    target_column: str,
+    window_minutes: int,
+) -> pd.Series:
+    working = _build_group_sort_frame(frame, group_columns, time_column)
+    parsed_time = pd.to_datetime(frame[time_column], errors="coerce")
+    working["__window_bucket"] = parsed_time.dt.floor(f"{window_minutes}min")
+    value_series = frame.loc[working["__original_index"], target_column].astype("string").fillna("__missing__")
+    combined_group_key = list(group_columns) + ["__window_bucket"]
+    working["__window_group_key"] = _build_group_key_series(working, combined_group_key)
+    previous_value = value_series.groupby(working["__window_group_key"], dropna=False).shift(1)
+    change_flag = ((previous_value.notna()) & (value_series != previous_value)).astype("Int64")
+    change_counts = change_flag.groupby(working["__window_group_key"], dropna=False).transform("sum").astype("Int64")
+    return change_counts.sort_index()
+
+
+def _build_group_sorted_series(
+    frame: pd.DataFrame,
+    group_columns: list[str],
+    time_column: str,
+    builder,
+) -> pd.Series:
+    working = _build_group_sort_frame(frame, group_columns, time_column)
+    return builder(working).sort_index()
+
+
+def _build_group_sort_frame(frame: pd.DataFrame, group_columns: list[str], time_column: str) -> pd.DataFrame:
+    working = frame[group_columns].copy()
+    working["__time"] = pd.to_datetime(frame[time_column], errors="coerce")
+    working["__original_index"] = frame.index
+    working["__group_key"] = _build_group_key_series(working, group_columns)
+    sort_columns = [*group_columns, "__time", "__original_index"]
+    return working.sort_values(by=sort_columns, kind="mergesort", na_position="last")
+
+
+def _build_group_key_series(frame: pd.DataFrame, columns: list[str]) -> pd.Series:
+    if not columns:
+        return pd.Series(["__all__"] * len(frame.index), index=frame.index, dtype="string")
+    safe = frame[columns].astype("string").fillna("__missing__")
+    return safe.astype(str).agg("||".join, axis=1)
+
+
+def _compute_group_event_order(working: pd.DataFrame) -> pd.Series:
+    order = working.groupby("__group_key", dropna=False).cumcount() + 1
+    return pd.Series(order.values, index=working["__original_index"], dtype="Int64")
+
+
+def _compute_group_time_delta(working: pd.DataFrame, *, direction: str) -> pd.Series:
+    grouped = working.groupby("__group_key", dropna=False)["__time"]
+    if direction == "previous":
+        delta = (working["__time"] - grouped.shift(1)).dt.total_seconds()
+    else:
+        delta = (grouped.shift(-1) - working["__time"]).dt.total_seconds()
+    return pd.Series(delta.values, index=working["__original_index"], dtype="Float64")
 
 
 def _default_combined_output_column(source_columns: list[str], suffix: str) -> str:

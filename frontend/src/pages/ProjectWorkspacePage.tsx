@@ -23,6 +23,7 @@ import type {
   FeaturePreviewRead,
   FeatureStepPreviewRead,
   FeatureTemplate,
+  FeatureHandoff,
   FieldMapping,
   ImportSession,
   ImportSessionConfirmRead,
@@ -94,7 +95,7 @@ function normalizeFeatureSteps(steps: FeatureFormValues['steps']) {
     const rawColumns = step.input_selector?.columns ?? []
     const selectorMode = step.input_selector?.mode ?? 'explicit'
     const stepType = step.step_type
-    const appendOnlyStepTypes = ['ratio_feature', 'difference_feature', 'concat_fields', 'equality_flag', 'group_frequency', 'group_unique_count', 'time_window_count', 'window_unique_count', 'window_spike_flag']
+    const appendOnlyStepTypes = ['ratio_feature', 'difference_feature', 'concat_fields', 'equality_flag', 'group_frequency', 'group_unique_count', 'group_duration', 'group_event_order', 'time_since_previous_event', 'time_until_next_event', 'group_value_change_flag', 'time_window_count', 'window_unique_count', 'window_target_unique_count', 'window_status_change_count', 'window_spike_flag']
     const isAppendOnlyStep = appendOnlyStepTypes.includes(stepType)
 
     if (step.params.prefix) {
@@ -218,6 +219,7 @@ export function ProjectWorkspacePage() {
   const [featurePipelines, setFeaturePipelines] = useState<FeaturePipeline[]>([])
   const [featurePreview, setFeaturePreview] = useState<FeaturePreviewRead | null>(null)
   const [featureTemplates, setFeatureTemplates] = useState<FeatureTemplate[]>([])
+  const [featureHandoff, setFeatureHandoff] = useState<FeatureHandoff | null>(null)
   const [featureStepPreview, setFeatureStepPreview] = useState<FeatureStepPreviewRead | null>(null)
   const [models, setModels] = useState<ModelVersion[]>([])
   const [modelPreview, setModelPreview] = useState<ModelPreviewRead | null>(null)
@@ -285,6 +287,7 @@ export function ProjectWorkspacePage() {
     setFeaturePipelines([])
     setFeaturePreview(null)
     setFeatureTemplates([])
+    setFeatureHandoff(null)
     setFeatureStepPreview(null)
     setModels([])
     setModelPreview(null)
@@ -597,6 +600,12 @@ export function ProjectWorkspacePage() {
     })
   }, [setSearchParams])
 
+  const handleFeatureHandoff = useCallback((handoff: FeatureHandoff) => {
+    setFeatureHandoff(handoff)
+    handleTabChange('feature')
+    messageApi.success('已带入行为追踪特征推荐方案，可在特征页确认或微调。')
+  }, [handleTabChange, messageApi])
+
   useEffect(() => {
     if (!pendingWorkspaceJobs.length || !selectedDatasetId) {
       return
@@ -786,6 +795,7 @@ export function ProjectWorkspacePage() {
     try {
       await api.delete(`/datasets/${datasetId}`)
       if (selectedDatasetId === datasetId) {
+        setFeatureHandoff(null)
         setSelectedDatasetId(null)
         setSelectedDataset(null)
         setDatasetPreview(null)
@@ -913,6 +923,7 @@ export function ProjectWorkspacePage() {
       })
       await loadDatasetWorkspace(selectedDatasetId)
       setSelectedFeaturePipelineId(response.data.resource_id)
+      setFeatureHandoff(null)
       setPendingWorkspaceJobs((current) => [...current, { jobId: response.data.job.id, kind: 'feature', resourceId: response.data.resource_id, tab: 'feature' }])
       handleTabChange('feature')
       messageApi.success('特征工程任务已提交，完成后会自动刷新结果。')
@@ -1091,8 +1102,8 @@ export function ProjectWorkspacePage() {
           onChange={handleTabChange}
           items={[
             { key: 'data', label: stageLabels.data, children: <DataTab project={project} datasets={datasets} selectedDatasetId={selectedDatasetId} selectedDataset={selectedDataset} datasetPreview={datasetPreview} fileList={fileList} datasetsLoading={datasetsLoading} previewLoading={workspaceLoading} fieldMapping={fieldMapping} importSession={importSession} mappingLoading={workspaceLoading} savingMapping={savingMapping} creatingImportSession={creatingImportSession} applyingImportCleaning={applyingImportCleaning} confirmingImportSession={confirmingImportSession} deletingDatasetId={deletingDatasetId} mappingForm={mappingForm} onSelectDataset={setSelectedDatasetId} onFileListChange={setFileList} onCreateImportSession={() => void handleCreateImportSession()} onConfirmImportSession={() => void handleConfirmImportSession()} onSelectImportTemplate={(templateId) => void handleSelectImportTemplate(templateId)} onApplyImportCleaning={(options) => void handleApplyImportCleaning(options)} onSaveFieldMapping={() => void handleSaveFieldMapping()} onDeleteDataset={(datasetId) => void handleDeleteDataset(datasetId)} /> },
-            { key: 'preprocess', label: stageLabels.preprocess, children: <PreprocessTab dataset={selectedDataset} columns={datasetColumns} pipelines={pipelines} selectedPipelineId={selectedPipelineId} selectedPipeline={selectedPipeline} preview={pipelinePreview} stepPreview={preprocessStepPreview} stepPreviewLoading={preprocessStepPreviewLoading} listLoading={workspaceLoading} previewLoading={pipelinePreviewLoading} running={runningPreprocess} advisor={preprocessAdvisor} advisorLoading={preprocessAdvisorLoading} sampledAdvisorRun={sampledAdvisorRun} sampledAdvisorLoading={sampledAdvisorLoading} onRun={(values) => void handleRunPreprocess(values)} onPreviewStep={(index, values) => void handlePreviewPreprocessStep(index, values)} onAnalyzeAdvisor={handleAnalyzePreprocessAdvisor} onRunSampledAdvisor={handleRunSampledPreprocessAdvisor} onSelectPipeline={setSelectedPipelineId} /> },
-            { key: 'feature', label: stageLabels.feature, children: <FeatureTab projectId={project?.id ?? null} dataset={selectedDataset} preprocessPipelines={pipelines} pipelines={featurePipelines} templates={featureTemplates} templatesLoading={featureTemplatesLoading} selectedPipelineId={selectedFeaturePipelineId} selectedPipeline={selectedFeaturePipeline} preview={featurePreview} stepPreview={featureStepPreview} listLoading={workspaceLoading} previewLoading={featurePreviewLoading} stepPreviewLoading={featureStepPreviewLoading} running={runningFeaturePipeline} savingTemplate={savingFeatureTemplate} onRun={(values) => void handleRunFeaturePipeline(values)} onPreviewStep={(index, values) => void handlePreviewFeatureStep(index, values)} onSaveTemplate={(values) => void handleSaveFeatureTemplate(values)} onSelectPipeline={setSelectedFeaturePipelineId} /> },
+            { key: 'preprocess', label: stageLabels.preprocess, children: <PreprocessTab dataset={selectedDataset} columns={datasetColumns} pipelines={pipelines} selectedPipelineId={selectedPipelineId} selectedPipeline={selectedPipeline} preview={pipelinePreview} stepPreview={preprocessStepPreview} stepPreviewLoading={preprocessStepPreviewLoading} listLoading={workspaceLoading} previewLoading={pipelinePreviewLoading} running={runningPreprocess} advisor={preprocessAdvisor} advisorLoading={preprocessAdvisorLoading} sampledAdvisorRun={sampledAdvisorRun} sampledAdvisorLoading={sampledAdvisorLoading} onRun={(values) => void handleRunPreprocess(values)} onPreviewStep={(index, values) => void handlePreviewPreprocessStep(index, values)} onAnalyzeAdvisor={handleAnalyzePreprocessAdvisor} onRunSampledAdvisor={handleRunSampledPreprocessAdvisor} onFeatureHandoff={handleFeatureHandoff} onSelectPipeline={setSelectedPipelineId} /> },
+            { key: 'feature', label: stageLabels.feature, children: <FeatureTab projectId={project?.id ?? null} dataset={selectedDataset} preprocessPipelines={pipelines} pipelines={featurePipelines} templates={featureTemplates} templatesLoading={featureTemplatesLoading} selectedPipelineId={selectedFeaturePipelineId} selectedPipeline={selectedFeaturePipeline} preview={featurePreview} stepPreview={featureStepPreview} listLoading={workspaceLoading} previewLoading={featurePreviewLoading} stepPreviewLoading={featureStepPreviewLoading} running={runningFeaturePipeline} savingTemplate={savingFeatureTemplate} featureHandoff={featureHandoff} onClearFeatureHandoff={() => setFeatureHandoff(null)} onRun={(values) => void handleRunFeaturePipeline(values)} onPreviewStep={(index, values) => void handlePreviewFeatureStep(index, values)} onSaveTemplate={(values) => void handleSaveFeatureTemplate(values)} onSelectPipeline={setSelectedFeaturePipelineId} /> },
             { key: 'training', label: stageLabels.training, children: <TrainingTab dataset={selectedDataset} columns={featureColumns} featurePipelines={featurePipelines} preprocessPipelines={pipelines} models={models} selectedModelId={selectedModelId} selectedModel={selectedModel} preview={modelPreview} analysis={modelAnalysis} listLoading={workspaceLoading} previewLoading={modelPreviewLoading} analysisLoading={modelAnalysisLoading} running={runningTraining} onRun={(values) => void handleRunTraining(values)} onSelectModel={setSelectedModelId} /> },
             { key: 'analysis', label: stageLabels.analysis, children: <AnalysisTab project={project} models={models} selectedModelId={selectedModelId} selectedModel={selectedModel} preview={modelPreview} analysis={modelAnalysis} llmConfig={llmConfig} llmExplanation={llmExplanation} listLoading={workspaceLoading} previewLoading={modelPreviewLoading} analysisLoading={modelAnalysisLoading} llmConfigLoading={llmConfigLoading} savingLlmConfig={savingLlmConfig} testingLlmConfig={testingLlmConfig} explainingWithLlm={explainingWithLlm} onSelectModel={setSelectedModelId} onSaveLlmConfig={(values) => void handleSaveLlmConfig(values)} onTestLlmConfig={(values) => void handleTestLlmConfig(values)} onRunLlmExplanation={(topK) => void handleRunLlmExplanation(topK)} /> },
           ]}

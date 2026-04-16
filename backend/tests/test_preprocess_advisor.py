@@ -42,6 +42,9 @@ class PreprocessAdvisorTests(unittest.TestCase):
         self.assertEqual(advice_by_field["label_copy"]["status"], "suspected_label_leak")
         self.assertEqual(advice_by_field["label_copy"]["recommended_action"], "drop_from_training")
         self.assertEqual(advice_by_field["request_id"]["status"], "suspected_id")
+        self.assertEqual(advice_by_field["request_id"]["recommended_action"], "move_to_feature_engineering")
+        self.assertEqual(advice_by_field["request_id"]["feature_handoff"]["tracking_type"], "flow")
+        self.assertIn("event_time_text", advice_by_field["request_id"]["feature_handoff"]["recommended_time_columns"])
         self.assertEqual(advice_by_field["raw_message"]["recommended_action"], "move_to_feature_engineering")
         self.assertEqual(advice_by_field["metric_text"]["recommended_action"], "cast_numeric")
         self.assertEqual(advice_by_field["event_time_text"]["recommended_action"], "cast_datetime")
@@ -97,8 +100,16 @@ class PreprocessAdvisorTests(unittest.TestCase):
                 "status": "suspected_id",
                 "reason_code": "identifier_column",
                 "reason_text": "",
-                "recommended_action": "exclude_column",
+                "recommended_action": "move_to_feature_engineering",
                 "confidence": "high",
+                "feature_handoff": {
+                    "issue_type": "behavior_tracking",
+                    "tracking_type": "flow",
+                    "recommended_group_key": "request_id",
+                    "recommended_time_columns": ["event_time_text"],
+                    "recommended_target_columns": [],
+                    "recipe_ids": ["group_frequency"],
+                },
             },
             {
                 "field": "constant_field",
@@ -120,7 +131,6 @@ class PreprocessAdvisorTests(unittest.TestCase):
         self.assertIn("exclude-columns", recommendations_by_id)
         self.assertIn("metric_text", recommendations_by_id["cast-numeric"]["step"]["input_selector"]["columns"])
         self.assertIn("event_time_text", recommendations_by_id["cast-datetime"]["step"]["input_selector"]["columns"])
-        self.assertNotIn("request_id", recommendations_by_id["exclude-columns"]["step"]["input_selector"]["columns"])
         self.assertNotIn("constant_field", recommendations_by_id["exclude-columns"]["step"]["input_selector"]["columns"])
 
 

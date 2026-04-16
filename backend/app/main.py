@@ -7,13 +7,17 @@ from app.api.router import api_router
 from app.core.config import get_settings
 from app.db.session import initialize_database
 from app.services.bootstrap import seed_demo_data
+from app.services.cleanup import garbage_collect_artifact_files
 from app.services.job_manager import job_manager
+from app.db.session import SessionLocal
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     initialize_database()
     seed_demo_data()
+    with SessionLocal() as db:
+        garbage_collect_artifact_files(db)
     job_manager.start()
     yield
     job_manager.shutdown()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
+from typing import Iterable
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -21,6 +22,8 @@ from app.models.preprocess_pipeline import PreprocessPipeline
 from app.models.project import Project
 
 STAGING_PATH_KEY = "_staging_path"
+ARTIFACT_FILE_SUFFIXES = {".parquet", ".pkl", ".pickle"}
+MANAGED_ARTIFACT_DIR_NAMES = ("processed", "preprocessed", "features", "models", "import_sessions")
 
 
 def delete_project_with_assets(db: Session, project_id: int) -> None:
@@ -58,6 +61,7 @@ def delete_project_with_assets(db: Session, project_id: int) -> None:
         storage_root / "preprocessed" / f"project_{project_id}",
         storage_root / "features" / f"project_{project_id}",
         storage_root / "models" / f"project_{project_id}",
+        storage_root / "import_sessions" / f"project_{project_id}",
     ]:
         _remove_path(relative_dir, storage_root)
 
@@ -137,6 +141,98 @@ def _remove_import_session_assets(import_session: ImportSession) -> None:
     staging_path = import_session.parse_options.get(STAGING_PATH_KEY)
     if staging_path:
         _remove_record_file(str(staging_path))
+
+
+def garbage_collect_artifact_files(db: Session) -> dict[str, int]:
+    referenced_paths = _collect_referenced_artifact_paths(db)
+    removed_files = 0
+    removed_dirs = 0
+
+    for storage_root in _iter_managed_storage_roots():
+        if not storage_root.exists():
+            continue
+
+        for dir_name in MANAGED_ARTIFACT_DIR_NAMES:
+            target_dir = storage_root / dir_name
+            if not target_dir.exists():
+                continue
+
+            for path in target_dir.rglob("*"):
+                if not path.is_file():
+                    continue
+                if path.suffix.lower() not in ARTIFACT_FILE_SUFFIXES:
+                    continue
+                resolved = path.resolve()
+                if resolved in referenced_paths:
+                    continue
+                resolved.unlink(missing_ok=True)
+                removed_files += 1
+
+            removed_dirs += _remove_empty_directories(target_dir, storage_root)
+
+    return {
+        "removed_files": removed_files,
+        "removed_dirs": removed_dirs,
+    }
+
+
+def _collect_referenced_artifact_paths(db: Session) -> set[Path]:
+    referenced: set[Path] = set()
+
+    for dataset in db.scalars(select(DatasetVersion)):
+        _add_referenced_path(referenced, dataset.parquet_path)
+
+    for pipeline in db.scalars(select(PreprocessPipeline)):
+        _add_referenced_path(referenced, pipeline.output_path)
+
+    for pipeline in db.scalars(select(FeaturePipeline)):
+        _add_referenced_path(referenced, pipeline.output_path)
+
+    for model in db.scalars(select(ModelVersion)):
+        _add_referenced_path(referenced, model.artifact_path)
+        _add_referenced_path(referenced, model.prediction_path)
+
+    for import_session in db.scalars(select(ImportSession)):
+        if isinstance(import_session.parse_options, dict):
+            staging_path = import_session.parse_options.get(STAGING_PATH_KEY)
+            if staging_path:
+                _add_referenced_path(referenced, str(staging_path))
+
+    return referenced
+
+
+def _add_referenced_path(referenced: set[Path], path_value: str | None) -> None:
+    if not path_value:
+        return
+    try:
+        resolved = get_settings().resolve_storage_path(path_value)
+    except Exception:
+        return
+    referenced.add(resolved)
+
+
+def _iter_managed_storage_roots() -> Iterable[Path]:
+    settings = get_settings()
+    roots = [settings.storage_root_path]
+    legacy_root = (settings.project_root / "backend" / "storage").resolve()
+    if legacy_root != settings.storage_root_path:
+        roots.append(legacy_root)
+    return roots
+
+
+def _remove_empty_directories(target_dir: Path, storage_root: Path) -> int:
+    removed = 0
+    for candidate in sorted((path for path in target_dir.rglob("*") if path.is_dir()), reverse=True):
+        try:
+            candidate.relative_to(storage_root)
+        except ValueError:
+            continue
+        try:
+            candidate.rmdir()
+            removed += 1
+        except OSError:
+            continue
+    return removed
 
 
 def _remove_path(path: Path, storage_root: Path) -> None:

@@ -39,6 +39,22 @@ REASON_TEXTS = {
     "cast_datetime": "字段内容看起来是时间字符串，建议先转成时间类型。",
     "keep": "字段当前可以直接作为训练候选输入。",
 }
+FLOW_TRACKING_HINTS = ("request", "trace", "session", "span", "transaction", "correlation", "flow")
+ENTITY_TRACKING_HINTS = ("userid", "user", "device", "host", "account", "sourceip", "srcip", "clientip")
+TRACKING_TARGET_HINTS = (
+    "path",
+    "uri",
+    "url",
+    "dest",
+    "dst",
+    "process",
+    "status",
+    "result",
+    "host",
+    "domain",
+    "method",
+    "protocol",
+)
 
 
 def analyze_preprocess_training_advisor(
@@ -262,7 +278,7 @@ def _build_field_advice(
         elif exclusion_reason == "identifier_column":
             status = "suspected_id"
             reason_code = exclusion_reason
-            recommended_action = "exclude_column"
+            recommended_action = "move_to_feature_engineering" if _infer_tracking_type(column) else "exclude_column"
         elif exclusion_reason == "raw_text_column":
             status = "raw_text"
             reason_code = exclusion_reason
@@ -305,6 +321,7 @@ def _build_field_advice(
                 "reason_text": _build_reason_text(reason_code, column),
                 "recommended_action": recommended_action,
                 "confidence": confidence,
+                "feature_handoff": _build_feature_handoff(frame, column, reason_code, recommended_action),
             }
         )
 
@@ -334,7 +351,97 @@ def _infer_cast_reason(column: str, series: pd.Series, target_column: str | None
 def _build_reason_text(reason_code: str, column: str) -> str:
     if reason_code == "high_missing":
         return f"{column} 缺失较多，建议在训练前先补全。"
+    if reason_code in {"identifier_column", "high_cardinality"} and _infer_tracking_type(column):
+        return f"{column} 更适合与时间字段一起生成行为追踪特征，而不是直接作为训练输入。"
     return REASON_TEXTS.get(reason_code, f"{column} 需要进一步确认是否适合作为训练字段。")
+
+
+def _build_feature_handoff(
+    frame: pd.DataFrame,
+    column: str,
+    reason_code: str,
+    recommended_action: str,
+) -> dict[str, Any] | None:
+    if recommended_action != "move_to_feature_engineering":
+        return None
+
+    tracking_type = _infer_tracking_type(column)
+    if not tracking_type:
+        return None
+
+    time_columns = _find_time_columns(frame, exclude_column=column)
+    if not time_columns:
+        return None
+
+    target_columns = _find_tracking_target_columns(frame, exclude_columns={column, *time_columns[:1]})
+    return {
+        "issue_type": "behavior_tracking",
+        "tracking_type": tracking_type,
+        "recommended_group_key": column,
+        "recommended_time_columns": time_columns,
+        "recommended_target_columns": target_columns,
+        "recipe_ids": (
+            ["group_frequency", "group_duration", "group_event_order", "time_since_previous_event"]
+            if tracking_type == "flow"
+            else ["group_frequency", "time_window_count", "window_target_unique_count", "window_spike_flag"]
+        ),
+        "reason_code": reason_code,
+    }
+
+
+def _infer_tracking_type(column: str) -> str | None:
+    normalized = "".join(character for character in str(column).strip().lower() if character.isalnum())
+    if any(hint in normalized for hint in FLOW_TRACKING_HINTS):
+        return "flow"
+    if any(hint in normalized for hint in ENTITY_TRACKING_HINTS):
+        return "entity"
+    return None
+
+
+def _find_time_columns(frame: pd.DataFrame, *, exclude_column: str) -> list[str]:
+    candidates: list[tuple[int, str]] = []
+    for column in frame.columns:
+        if column == exclude_column:
+            continue
+        normalized = "".join(character for character in str(column).strip().lower() if character.isalnum())
+        score = 0
+        if any(token in normalized for token in ("time", "timestamp", "date", "datetime")):
+            score += 3
+        series = frame[column]
+        if pd.api.types.is_datetime64_any_dtype(series):
+            score += 5
+        else:
+            non_null = series.dropna()
+            if not non_null.empty:
+                parsed_ratio = pd.to_datetime(non_null.astype("string"), errors="coerce").notna().mean()
+                if parsed_ratio >= DATETIME_CAST_RATIO:
+                    score += 2
+        if score > 0:
+            candidates.append((score, column))
+    candidates.sort(key=lambda item: (-item[0], item[1]))
+    return [column for _, column in candidates[:3]]
+
+
+def _find_tracking_target_columns(frame: pd.DataFrame, *, exclude_columns: set[str]) -> list[str]:
+    candidates: list[tuple[int, str]] = []
+    for column in frame.columns:
+        if column in exclude_columns:
+            continue
+        normalized = "".join(character for character in str(column).strip().lower() if character.isalnum())
+        score = 0
+        if any(hint in normalized for hint in TRACKING_TARGET_HINTS):
+            score += 3
+        series = frame[column]
+        if pd.api.types.is_numeric_dtype(series):
+            score += 1
+        if not pd.api.types.is_numeric_dtype(series):
+            cardinality = int(series.dropna().astype("string").nunique(dropna=True)) if not series.dropna().empty else 0
+            if 1 < cardinality <= 200:
+                score += 1
+        if score > 0:
+            candidates.append((score, column))
+    candidates.sort(key=lambda item: (-item[0], item[1]))
+    return [column for _, column in candidates[:5]]
 
 
 def _build_recommended_steps(frame: pd.DataFrame, field_advice: list[dict[str, str]]) -> list[dict[str, Any]]:

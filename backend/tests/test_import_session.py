@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.services.dataset_import import _write_parquet
 from app.services.import_session import (
+    _clear_import_session_artifacts,
     _build_effective_schema_snapshot,
     _build_staging_select_sql,
     _load_preview_rows_from_staging,
@@ -99,6 +100,23 @@ class ImportSessionOptimizationTests(unittest.TestCase):
 
             self.assertEqual(list(materialized.columns), ["event_time", "destination_ip"])
             self.assertEqual(materialized.loc[1, "destination_ip"], "1.1.1.2")
+
+    def test_clear_import_session_artifacts_removes_staging_file_and_private_keys(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            staging_path = Path(temp_dir) / "staging.parquet"
+            staging_path.write_text("temp", encoding="utf-8")
+
+            cleaned = _clear_import_session_artifacts(
+                {
+                    "_staging_path": str(staging_path),
+                    "_base_schema": [{"name": "a"}],
+                    "_base_detected_fields": {"text_fields": ["a"]},
+                    "keep_me": "value",
+                }
+            )
+
+            self.assertFalse(staging_path.exists())
+            self.assertEqual(cleaned, {"keep_me": "value"})
 
 
 if __name__ == "__main__":

@@ -35,6 +35,7 @@ import type {
   FeatureStep,
   FeatureStepPreviewRead,
   FeatureTemplate,
+  FeatureHandoff,
   PreprocessPipeline,
 } from '../../types'
 
@@ -63,8 +64,15 @@ type DraftFeatureStepType =
   | 'equality_flag'
   | 'group_frequency'
   | 'group_unique_count'
+  | 'group_duration'
+  | 'group_event_order'
+  | 'time_since_previous_event'
+  | 'time_until_next_event'
+  | 'group_value_change_flag'
   | 'time_window_count'
   | 'window_unique_count'
+  | 'window_target_unique_count'
+  | 'window_status_change_count'
   | 'window_spike_flag'
   | 'ip_features'
   | 'port_features'
@@ -77,7 +85,15 @@ export type FeatureFormValues = {
   mode: 'quick' | 'advanced'
   name: string
   preprocessPipelineId?: number
+  quickStrategy?: 'template' | 'behavior_tracking'
   templateId?: string
+  behaviorTracking?: {
+    trackingType: 'flow' | 'entity'
+    groupKey?: string
+    timeColumn?: string
+    targetColumns: string[]
+    recipeKinds: Array<'base' | 'window' | 'sequence'>
+  }
   steps: FeatureStepDraft[]
   templateSaveName?: string
   templateSaveDescription?: string
@@ -135,6 +151,8 @@ type Props = {
   stepPreviewLoading: boolean
   running: boolean
   savingTemplate: boolean
+  featureHandoff: FeatureHandoff | null
+  onClearFeatureHandoff: () => void
   onRun: (values: FeatureFormValues) => void
   onPreviewStep: (stepIndex: number, values: FeatureFormValues) => void
   onSaveTemplate: (values: FeatureFormValues) => void
@@ -163,8 +181,15 @@ const STEP_TYPE_OPTIONS: Array<{ label: string; value: DraftFeatureStepType }> =
   { label: '字段相等标记', value: 'equality_flag' },
   { label: '组内频次', value: 'group_frequency' },
   { label: '组内去重数', value: 'group_unique_count' },
+  { label: '组内持续时长', value: 'group_duration' },
+  { label: '组内事件序号', value: 'group_event_order' },
+  { label: '距离上一事件', value: 'time_since_previous_event' },
+  { label: '距离下一事件', value: 'time_until_next_event' },
+  { label: '组内值变化标记', value: 'group_value_change_flag' },
   { label: '时间窗计数', value: 'time_window_count' },
   { label: '时间窗去重数', value: 'window_unique_count' },
+  { label: '时间窗目标去重数', value: 'window_target_unique_count' },
+  { label: '时间窗状态变化数', value: 'window_status_change_count' },
   { label: '时间窗突增标记', value: 'window_spike_flag' },
   { label: 'IP 基础特征', value: 'ip_features' },
   { label: '端口基础特征', value: 'port_features' },
@@ -211,12 +236,25 @@ const LOG_TYPE_OPTIONS = [
   { label: '通用日志', value: 'generic_log' },
 ]
 
+const QUICK_STRATEGY_OPTIONS = [
+  { label: '日志模板', value: 'template' },
+  { label: '行为追踪', value: 'behavior_tracking' },
+]
+
+const BEHAVIOR_RECIPE_OPTIONS = [
+  { label: '基础行为统计', value: 'base' },
+  { label: '时间窗行为', value: 'window' },
+  { label: '顺序特征', value: 'sequence' },
+]
+
 export function FeatureTab(props: Props) {
   const [form] = Form.useForm<FeatureFormValues>()
   const watchedValues = Form.useWatch([], form)
   const mode = watchedValues?.mode ?? 'quick'
+  const quickStrategy = watchedValues?.quickStrategy ?? (props.featureHandoff ? 'behavior_tracking' : 'template')
   const selectedPreprocessPipelineId = watchedValues?.preprocessPipelineId
   const selectedTemplateId = watchedValues?.templateId
+  const behaviorTracking = watchedValues?.behaviorTracking
 
   const availableColumns = useMemo(() => {
     if (!props.dataset) return []
@@ -242,14 +280,16 @@ export function FeatureTab(props: Props) {
     if (props.dataset) {
       form.setFieldsValue({
         mode: form.getFieldValue('mode') ?? 'quick',
+        quickStrategy: form.getFieldValue('quickStrategy') ?? (props.featureHandoff ? 'behavior_tracking' : 'template'),
         name: `${props.dataset.version_name}-features-${props.pipelines.length + 1}`,
+        behaviorTracking: form.getFieldValue('behaviorTracking') ?? createBehaviorTrackingDefaults(props.featureHandoff, availableColumns),
         steps: form.getFieldValue('steps') ?? [],
         templateSaveLogType: inferLogType(props.dataset.parser_profile),
       })
     } else {
       form.resetFields()
     }
-  }, [props.dataset, props.pipelines.length, form])
+  }, [availableColumns, form, props.dataset, props.featureHandoff, props.pipelines.length])
 
   useEffect(() => {
     if (!props.dataset || !props.templates.length || form.getFieldValue('templateId')) {
@@ -261,9 +301,33 @@ export function FeatureTab(props: Props) {
     }
   }, [props.dataset, props.templates, availableColumns, form])
 
+  useEffect(() => {
+    if (!props.featureHandoff) return
+    form.setFieldsValue({
+      mode: 'quick',
+      quickStrategy: 'behavior_tracking',
+      behaviorTracking: createBehaviorTrackingDefaults(props.featureHandoff, availableColumns),
+    })
+  }, [availableColumns, form, props.featureHandoff])
+
   const draftSteps = watchedValues?.steps ?? []
+  const behaviorTrackingSteps = useMemo(
+    () => buildBehaviorTrackingSteps(behaviorTracking, availableColumns),
+    [availableColumns, behaviorTracking],
+  )
+  const behaviorTrackingSummary = useMemo(
+    () => describeBehaviorTrackingPlan(behaviorTracking, behaviorTrackingSteps),
+    [behaviorTracking, behaviorTrackingSteps],
+  )
 
   function handleSubmit(values: FeatureFormValues) {
+    if (values.mode === 'quick' && values.quickStrategy === 'behavior_tracking') {
+      props.onRun({
+        ...values,
+        steps: behaviorTrackingSteps,
+      })
+      return
+    }
     if (values.mode === 'quick' && selectedTemplate) {
       props.onRun({
         ...values,
@@ -314,45 +378,104 @@ export function FeatureTab(props: Props) {
                 </Form.Item>
 
                 {mode === 'quick' ? (
-                  <Card size="small" className="nested-card" title="日志类型模板">
-                    <Space direction="vertical" size={16} className="full-width">
-                      <Form.Item name="templateId" label="选择模板" rules={[{ required: true, message: '请选择一个模板' }]}>
-                        <Select
-                          loading={props.templatesLoading}
-                          placeholder="选择一个内置或项目内模板"
-                          options={props.templates.map((template) => ({
-                            label: `${template.scope === 'builtin' ? '内置' : '项目'} · ${template.name}`,
-                            value: template.id,
-                          }))}
-                        />
-                      </Form.Item>
-                      {selectedTemplate ? (
-                        <Space direction="vertical" size={12} className="full-width">
-                          <Text>{selectedTemplate.description}</Text>
-                          <Space wrap>
-                            <Tag color="blue">{selectedTemplate.log_type}</Tag>
-                            <Tag>{selectedTemplate.scope === 'builtin' ? '内置模板' : '项目模板'}</Tag>
-                          </Space>
-                          <Space wrap>
-                            {(selectedTemplate.steps ?? []).map((step, index) => (
-                              <Tag color="cyan" key={`${selectedTemplate.id}-${index}`}>{index + 1}. {describePersistedStep(step)}</Tag>
-                            ))}
-                          </Space>
-                          <Space wrap>
-                            <Text strong>已匹配字段：</Text>
-                            {matchedColumns.length ? matchedColumns.map((column) => <Tag color="green" key={column}>{column}</Tag>) : <Text type="secondary">暂无</Text>}
-                          </Space>
-                          <Space wrap>
-                            <Text strong>缺失字段：</Text>
-                            {missingColumns.length ? missingColumns.map((column) => <Tag color="red" key={column}>{column}</Tag>) : <Text type="secondary">无</Text>}
-                          </Space>
-                          <Button onClick={applyTemplateToAdvanced}>带入高级模式继续微调</Button>
+                  <Space direction="vertical" size={16} className="full-width">
+                    <Form.Item name="quickStrategy" label="快速模式入口">
+                      <Segmented block options={QUICK_STRATEGY_OPTIONS} />
+                    </Form.Item>
+
+                    {quickStrategy === 'behavior_tracking' ? (
+                      <Card size="small" className="nested-card" title="行为追踪特征">
+                        <Space direction="vertical" size={16} className="full-width">
+                          {props.featureHandoff ? (
+                            <Alert
+                              type="info"
+                              showIcon
+                              message={`已从预处理页带入 ${props.featureHandoff.recommended_group_key} 的行为追踪推荐`}
+                              description={`推荐按${props.featureHandoff.tracking_type === 'flow' ? '流程追踪' : '主体追踪'}建模，优先使用 ${props.featureHandoff.recommended_time_columns[0] ?? '时间字段'} 作为时间轴。`}
+                              action={<Button size="small" onClick={props.onClearFeatureHandoff}>清除承接</Button>}
+                            />
+                          ) : null}
+                          <div className="step-grid">
+                            <Form.Item name={['behaviorTracking', 'trackingType']} label="追踪类型" rules={[{ required: true, message: '请选择追踪类型' }]}>
+                              <Select
+                                options={[
+                                  { label: '按流程追踪', value: 'flow' },
+                                  { label: '按主体追踪', value: 'entity' },
+                                ]}
+                              />
+                            </Form.Item>
+                            <Form.Item name={['behaviorTracking', 'groupKey']} label="追踪键" rules={[{ required: true, message: '请选择一个追踪键' }]}>
+                              <Select allowClear options={availableColumns.map((column) => ({ label: column, value: column }))} />
+                            </Form.Item>
+                            <Form.Item name={['behaviorTracking', 'timeColumn']} label="时间字段" rules={[{ required: true, message: '请选择时间字段' }]}>
+                              <Select allowClear options={availableColumns.map((column) => ({ label: column, value: column }))} />
+                            </Form.Item>
+                            <Form.Item name={['behaviorTracking', 'targetColumns']} label="目标字段（可选）">
+                              <Select mode="multiple" allowClear options={availableColumns.map((column) => ({ label: column, value: column }))} />
+                            </Form.Item>
+                            <Form.Item name={['behaviorTracking', 'recipeKinds']} label="推荐配方">
+                              <Select mode="multiple" allowClear options={BEHAVIOR_RECIPE_OPTIONS} />
+                            </Form.Item>
+                          </div>
+                          <Card size="small" type="inner" title="推荐说明">
+                            <Space direction="vertical" size={8} className="full-width">
+                              <Text>{behaviorTrackingSummary.description}</Text>
+                              <Space wrap>
+                                {behaviorTrackingSummary.highlights.map((item) => (
+                                  <Tag color="cyan" key={item}>{item}</Tag>
+                                ))}
+                              </Space>
+                              <Space wrap>
+                                {behaviorTrackingSummary.generatedColumns.map((column) => (
+                                  <Tag color="green" key={column}>{column}</Tag>
+                                ))}
+                              </Space>
+                            </Space>
+                          </Card>
                         </Space>
-                      ) : (
-                        <Text type="secondary">选择模板后，这里会显示模板说明和字段匹配结果。</Text>
-                      )}
-                    </Space>
-                  </Card>
+                      </Card>
+                    ) : (
+                      <Card size="small" className="nested-card" title="日志类型模板">
+                        <Space direction="vertical" size={16} className="full-width">
+                          <Form.Item name="templateId" label="选择模板" rules={[{ required: quickStrategy === 'template', message: '请选择一个模板' }]}>
+                            <Select
+                              loading={props.templatesLoading}
+                              placeholder="选择一个内置或项目内模板"
+                              options={props.templates.map((template) => ({
+                                label: `${template.scope === 'builtin' ? '内置' : '项目'} · ${template.name}`,
+                                value: template.id,
+                              }))}
+                            />
+                          </Form.Item>
+                          {selectedTemplate ? (
+                            <Space direction="vertical" size={12} className="full-width">
+                              <Text>{selectedTemplate.description}</Text>
+                              <Space wrap>
+                                <Tag color="blue">{selectedTemplate.log_type}</Tag>
+                                <Tag>{selectedTemplate.scope === 'builtin' ? '内置模板' : '项目模板'}</Tag>
+                              </Space>
+                              <Space wrap>
+                                {(selectedTemplate.steps ?? []).map((step, index) => (
+                                  <Tag color="cyan" key={`${selectedTemplate.id}-${index}`}>{index + 1}. {describePersistedStep(step)}</Tag>
+                                ))}
+                              </Space>
+                              <Space wrap>
+                                <Text strong>已匹配字段：</Text>
+                                {matchedColumns.length ? matchedColumns.map((column) => <Tag color="green" key={column}>{column}</Tag>) : <Text type="secondary">暂无</Text>}
+                              </Space>
+                              <Space wrap>
+                                <Text strong>缺失字段：</Text>
+                                {missingColumns.length ? missingColumns.map((column) => <Tag color="red" key={column}>{column}</Tag>) : <Text type="secondary">无</Text>}
+                              </Space>
+                              <Button onClick={applyTemplateToAdvanced}>带入高级模式继续微调</Button>
+                            </Space>
+                          ) : (
+                            <Text type="secondary">选择模板后，这里会显示模板说明和字段匹配结果。</Text>
+                          )}
+                        </Space>
+                      </Card>
+                    )}
+                  </Space>
                 ) : (
                   <>
                     <Form.List name="steps">
@@ -440,6 +563,26 @@ export function FeatureTab(props: Props) {
                                         <Select allowClear options={availableColumns.map((column) => ({ label: column, value: column }))} placeholder="选择组内统计 unique 的字段" />
                                       </Form.Item>
                                     ) : null}
+                                    {stepType === 'group_duration' ? (
+                                      <Form.Item name={[field.name, 'params', 'timeColumn']} label="时间字段">
+                                        <Select allowClear options={availableColumns.map((column) => ({ label: column, value: column }))} placeholder="选择时间字段" />
+                                      </Form.Item>
+                                    ) : null}
+                                    {stepType === 'group_event_order' || stepType === 'time_since_previous_event' || stepType === 'time_until_next_event' ? (
+                                      <Form.Item name={[field.name, 'params', 'timeColumn']} label="时间字段">
+                                        <Select allowClear options={availableColumns.map((column) => ({ label: column, value: column }))} placeholder="选择时间字段" />
+                                      </Form.Item>
+                                    ) : null}
+                                    {stepType === 'group_value_change_flag' ? (
+                                      <>
+                                        <Form.Item name={[field.name, 'params', 'timeColumn']} label="时间字段">
+                                          <Select allowClear options={availableColumns.map((column) => ({ label: column, value: column }))} placeholder="选择时间字段" />
+                                        </Form.Item>
+                                        <Form.Item name={[field.name, 'params', 'targetColumn']} label="变化检测字段">
+                                          <Select allowClear options={availableColumns.map((column) => ({ label: column, value: column }))} placeholder="例如 status_code / path / process_name" />
+                                        </Form.Item>
+                                      </>
+                                    ) : null}
                                     {stepType === 'time_window_count' ? (
                                       <>
                                         <Form.Item name={[field.name, 'params', 'timeColumn']} label="时间字段">
@@ -457,6 +600,32 @@ export function FeatureTab(props: Props) {
                                         </Form.Item>
                                         <Form.Item name={[field.name, 'params', 'targetColumn']} label="窗口内去重目标字段">
                                           <Select allowClear options={availableColumns.map((column) => ({ label: column, value: column }))} placeholder="选择窗口内统计 unique 的字段" />
+                                        </Form.Item>
+                                        <Form.Item name={[field.name, 'params', 'windowMinutes']} label="窗口分钟数">
+                                          <Input type="number" placeholder="默认 15" />
+                                        </Form.Item>
+                                      </>
+                                    ) : null}
+                                    {stepType === 'window_target_unique_count' ? (
+                                      <>
+                                        <Form.Item name={[field.name, 'params', 'timeColumn']} label="时间字段">
+                                          <Select allowClear options={availableColumns.map((column) => ({ label: column, value: column }))} placeholder="选择时间字段" />
+                                        </Form.Item>
+                                        <Form.Item name={[field.name, 'params', 'targetColumn']} label="窗口内去重目标字段">
+                                          <Select allowClear options={availableColumns.map((column) => ({ label: column, value: column }))} placeholder="例如 path / dest_ip / process_name" />
+                                        </Form.Item>
+                                        <Form.Item name={[field.name, 'params', 'windowMinutes']} label="窗口分钟数">
+                                          <Input type="number" placeholder="默认 15" />
+                                        </Form.Item>
+                                      </>
+                                    ) : null}
+                                    {stepType === 'window_status_change_count' ? (
+                                      <>
+                                        <Form.Item name={[field.name, 'params', 'timeColumn']} label="时间字段">
+                                          <Select allowClear options={availableColumns.map((column) => ({ label: column, value: column }))} placeholder="选择时间字段" />
+                                        </Form.Item>
+                                        <Form.Item name={[field.name, 'params', 'targetColumn']} label="状态字段">
+                                          <Select allowClear options={availableColumns.map((column) => ({ label: column, value: column }))} placeholder="例如 status_code / result / process_name" />
                                         </Form.Item>
                                         <Form.Item name={[field.name, 'params', 'windowMinutes']} label="窗口分钟数">
                                           <Input type="number" placeholder="默认 15" />
@@ -571,8 +740,31 @@ export function FeatureTab(props: Props) {
           <DetailPanel title="特征详情" extra={props.selectedPipeline ? <Tag color="cyan">{props.selectedPipeline.name}</Tag> : null}>
             <Space direction="vertical" size={16} className="full-width">
               {mode === 'quick' ? (
-                <Card size="small" className="nested-card" title="模板摘要">
-                  {selectedTemplate ? (
+                <Card size="small" className="nested-card" title={quickStrategy === 'behavior_tracking' ? '行为追踪摘要' : '模板摘要'}>
+                  {quickStrategy === 'behavior_tracking' ? (
+                    <Space direction="vertical" size={12} className="full-width">
+                      <Descriptions
+                        column={1}
+                        items={[
+                          { key: 'tracking', label: '追踪类型', children: behaviorTracking?.trackingType === 'flow' ? '按流程追踪' : '按主体追踪' },
+                          { key: 'group', label: '追踪键', children: behaviorTracking?.groupKey ?? '未选择' },
+                          { key: 'time', label: '时间字段', children: behaviorTracking?.timeColumn ?? '未选择' },
+                          { key: 'targets', label: '目标字段', children: behaviorTracking?.targetColumns?.join(', ') || '未选择' },
+                        ]}
+                      />
+                      <Text>{behaviorTrackingSummary.description}</Text>
+                      <Space wrap>
+                        {behaviorTrackingSummary.highlights.map((item) => (
+                          <Tag color="cyan" key={item}>{item}</Tag>
+                        ))}
+                      </Space>
+                      <Space wrap>
+                        {behaviorTrackingSummary.generatedColumns.map((column) => (
+                          <Tag color="green" key={column}>{column}</Tag>
+                        ))}
+                      </Space>
+                    </Space>
+                  ) : selectedTemplate ? (
                     <Descriptions
                       column={1}
                       items={[
@@ -644,6 +836,175 @@ export function FeatureTab(props: Props) {
       }
     />
   )
+}
+
+function createBehaviorTrackingDefaults(featureHandoff: FeatureHandoff | null, availableColumns: string[]) {
+  const recommendedTime = featureHandoff?.recommended_time_columns.find((column) => availableColumns.includes(column))
+  const recommendedTargets = (featureHandoff?.recommended_target_columns ?? []).filter((column) => availableColumns.includes(column)).slice(0, 2)
+  const recipeKinds: Array<'base' | 'window' | 'sequence'> = featureHandoff?.tracking_type === 'entity' ? ['base', 'window'] : ['base', 'sequence']
+  return {
+    trackingType: (featureHandoff?.tracking_type === 'entity' ? 'entity' : 'flow') as 'flow' | 'entity',
+    groupKey: featureHandoff?.recommended_group_key && availableColumns.includes(featureHandoff.recommended_group_key)
+      ? featureHandoff.recommended_group_key
+      : undefined,
+    timeColumn: recommendedTime,
+    targetColumns: recommendedTargets,
+    recipeKinds,
+  }
+}
+
+function buildBehaviorTrackingSteps(
+  behaviorTracking: FeatureFormValues['behaviorTracking'] | undefined,
+  availableColumns: string[],
+) {
+  if (!behaviorTracking?.groupKey || !behaviorTracking.timeColumn) {
+    return []
+  }
+  const groupKey = behaviorTracking.groupKey
+  const timeColumn = behaviorTracking.timeColumn
+  if (!availableColumns.includes(groupKey) || !availableColumns.includes(timeColumn)) {
+    return []
+  }
+
+  const targetColumns = (behaviorTracking.targetColumns ?? []).filter((column) => availableColumns.includes(column) && column !== groupKey && column !== timeColumn)
+  const primaryTarget = targetColumns[0]
+  const steps: FeatureStepDraft[] = []
+  const recipeKinds = new Set(behaviorTracking.recipeKinds ?? [])
+
+  if (recipeKinds.has('base')) {
+    steps.push(
+      createBehaviorTrackingStep('group_frequency', [groupKey], { output_column: `${groupKey}_event_count` }),
+      createBehaviorTrackingStep('group_duration', [groupKey], { timeColumn, output_column: `${groupKey}_duration_seconds` }),
+    )
+    if (primaryTarget) {
+      steps.push(
+        createBehaviorTrackingStep('group_unique_count', [groupKey], {
+          timeColumn,
+          targetColumn: primaryTarget,
+          output_column: `${groupKey}_${primaryTarget}_unique_count`,
+        }),
+      )
+    }
+  }
+
+  if (recipeKinds.has('window')) {
+    steps.push(
+      createBehaviorTrackingStep('time_window_count', [groupKey], {
+        timeColumn,
+        windowMinutes: 15,
+        output_column: `${groupKey}_15m_count`,
+      }),
+      createBehaviorTrackingStep('window_spike_flag', [groupKey], {
+        timeColumn,
+        windowMinutes: 15,
+        threshold: behaviorTracking.trackingType === 'entity' ? 10 : 6,
+        output_column: `${groupKey}_15m_spike`,
+      }),
+    )
+    if (primaryTarget) {
+      steps.push(
+        createBehaviorTrackingStep('window_target_unique_count', [groupKey], {
+          timeColumn,
+          targetColumn: primaryTarget,
+          windowMinutes: 15,
+          output_column: `${groupKey}_${primaryTarget}_15m_unique_count`,
+        }),
+      )
+    }
+  }
+
+  if (recipeKinds.has('sequence')) {
+    steps.push(
+      createBehaviorTrackingStep('group_event_order', [groupKey], { timeColumn, output_column: `${groupKey}_event_order` }),
+      createBehaviorTrackingStep('time_since_previous_event', [groupKey], { timeColumn, output_column: `${groupKey}_seconds_since_previous` }),
+      createBehaviorTrackingStep('time_until_next_event', [groupKey], { timeColumn, output_column: `${groupKey}_seconds_until_next` }),
+    )
+    if (primaryTarget) {
+      steps.push(
+        createBehaviorTrackingStep('group_value_change_flag', [groupKey], {
+          timeColumn,
+          targetColumn: primaryTarget,
+          output_column: `${groupKey}_${primaryTarget}_changed`,
+        }),
+      )
+    }
+  }
+
+  if (behaviorTracking.trackingType === 'flow' && primaryTarget && (recipeKinds.has('sequence') || recipeKinds.has('window'))) {
+    steps.push(
+      createBehaviorTrackingStep('window_status_change_count', [groupKey], {
+        timeColumn,
+        targetColumn: primaryTarget,
+        windowMinutes: 15,
+        output_column: `${groupKey}_${primaryTarget}_15m_change_count`,
+      }),
+    )
+  }
+
+  return dedupeBehaviorTrackingSteps(steps)
+}
+
+function createBehaviorTrackingStep(
+  stepType: DraftFeatureStepType,
+  columns: string[],
+  options: {
+    timeColumn?: string
+    targetColumn?: string
+    windowMinutes?: number
+    threshold?: number
+    output_column: string
+  },
+): FeatureStepDraft {
+  return {
+    ...createFeatureStepDraft(stepType),
+    input_selector: { mode: 'explicit', columns },
+    params: {
+      ...createFeatureStepDraft(stepType).params,
+      timeColumn: options.timeColumn,
+      targetColumn: options.targetColumn,
+      windowMinutes: options.windowMinutes,
+      threshold: options.threshold,
+    },
+    output_mode: {
+      mode: 'append_new_columns',
+      output_column: options.output_column,
+      suffix: inferDefaultSuffix(stepType),
+    },
+  }
+}
+
+function dedupeBehaviorTrackingSteps(steps: FeatureStepDraft[]) {
+  const seen = new Set<string>()
+  return steps.filter((step) => {
+    const fingerprint = JSON.stringify({
+      stepType: step.step_type,
+      columns: step.input_selector.columns,
+      target: step.params.targetColumn,
+      time: step.params.timeColumn,
+      output: step.output_mode.output_column,
+    })
+    if (seen.has(fingerprint)) return false
+    seen.add(fingerprint)
+    return true
+  })
+}
+
+function describeBehaviorTrackingPlan(
+  behaviorTracking: FeatureFormValues['behaviorTracking'] | undefined,
+  steps: FeatureStepDraft[],
+) {
+  const highlights = [
+    behaviorTracking?.trackingType === 'entity' ? '按主体追踪行为' : '按流程追踪行为',
+    behaviorTracking?.groupKey ? `追踪键: ${behaviorTracking.groupKey}` : '待选择追踪键',
+    behaviorTracking?.timeColumn ? `时间轴: ${behaviorTracking.timeColumn}` : '待选择时间字段',
+  ]
+  return {
+    description: behaviorTracking?.trackingType === 'entity'
+      ? '主体追踪会把用户、主机、设备或来源 IP 作为行为主体，生成活跃度、窗口行为和突增相关特征。'
+      : '流程追踪会把 request/session/trace 等流程 ID 作为分组键，生成事件数、持续时长、前后时序和状态变化特征。',
+    highlights,
+    generatedColumns: steps.map((step) => step.output_mode.output_column || `${(step.input_selector.columns ?? []).join('_')}${step.output_mode.suffix ?? ''}`),
+  }
 }
 
 function createFeatureStepDraft(stepType: DraftFeatureStepType = 'frequency_encode'): FeatureStepDraft {
@@ -731,8 +1092,15 @@ function inferDefaultSuffix(stepType: DraftFeatureStepType) {
   if (stepType === 'equality_flag') return '_equal'
   if (stepType === 'group_frequency') return '_group_count'
   if (stepType === 'group_unique_count') return '_unique_count'
+  if (stepType === 'group_duration') return '_duration_seconds'
+  if (stepType === 'group_event_order') return '_event_order'
+  if (stepType === 'time_since_previous_event') return '_seconds_since_previous'
+  if (stepType === 'time_until_next_event') return '_seconds_until_next'
+  if (stepType === 'group_value_change_flag') return '_value_changed'
   if (stepType === 'time_window_count') return '_15m_count'
   if (stepType === 'window_unique_count') return '_15m_unique_count'
+  if (stepType === 'window_target_unique_count') return '_15m_target_unique_count'
+  if (stepType === 'window_status_change_count') return '_15m_status_change_count'
   if (stepType === 'window_spike_flag') return '_15m_spike'
   if (stepType === 'status_category') return '_category'
   if (stepType === 'value_map') return '_mapped'
@@ -749,14 +1117,14 @@ function supportsExplicitOutputColumn(
   selectorMode: FeatureStepDraft['input_selector']['mode'],
   selectedColumns: string[],
 ) {
-  if (['ratio_feature', 'difference_feature', 'concat_fields', 'equality_flag', 'group_frequency', 'group_unique_count', 'time_window_count', 'window_unique_count', 'window_spike_flag'].includes(stepType)) {
+  if (['ratio_feature', 'difference_feature', 'concat_fields', 'equality_flag', 'group_frequency', 'group_unique_count', 'group_duration', 'group_event_order', 'time_since_previous_event', 'time_until_next_event', 'group_value_change_flag', 'time_window_count', 'window_unique_count', 'window_target_unique_count', 'window_status_change_count', 'window_spike_flag'].includes(stepType)) {
     return true
   }
   return selectorMode === 'explicit' && selectedColumns.length <= 1
 }
 
 function getOutputModeOptions(stepType: DraftFeatureStepType) {
-  if (['ratio_feature', 'difference_feature', 'concat_fields', 'equality_flag', 'group_frequency', 'group_unique_count', 'time_window_count', 'window_unique_count', 'window_spike_flag'].includes(stepType)) {
+  if (['ratio_feature', 'difference_feature', 'concat_fields', 'equality_flag', 'group_frequency', 'group_unique_count', 'group_duration', 'group_event_order', 'time_since_previous_event', 'time_until_next_event', 'group_value_change_flag', 'time_window_count', 'window_unique_count', 'window_target_unique_count', 'window_status_change_count', 'window_spike_flag'].includes(stepType)) {
     return [{ label: '追加新特征', value: 'append_new_columns' }]
   }
   return [{ label: '追加新特征', value: 'append_new_columns' }, { label: '覆盖原字段', value: 'replace_existing' }]
@@ -770,6 +1138,9 @@ function getSelectorLabel(stepType: DraftFeatureStepType) {
   }
   if (stepType === 'group_frequency' || stepType === 'group_unique_count' || stepType === 'time_window_count' || stepType === 'window_unique_count' || stepType === 'window_spike_flag') {
     return '分组字段'
+  }
+  if (stepType === 'group_duration' || stepType === 'group_event_order' || stepType === 'time_since_previous_event' || stepType === 'time_until_next_event' || stepType === 'group_value_change_flag' || stepType === 'window_target_unique_count' || stepType === 'window_status_change_count') {
+    return '追踪键 / 分组字段'
   }
   return '目标字段'
 }
@@ -822,8 +1193,15 @@ function describeDraftStep(step: Partial<FeatureStepDraft>) {
   if (stepType === 'equality_flag') return `字段相等标记(${selectorDescription})`
   if (stepType === 'group_frequency') return `组内频次(${selectorDescription})`
   if (stepType === 'group_unique_count') return `组内去重数(${selectorDescription} -> ${step.params?.targetColumn || '未选目标字段'})`
+  if (stepType === 'group_duration') return `组内持续时长(${selectorDescription} -> ${step.params?.timeColumn || '未选时间字段'})`
+  if (stepType === 'group_event_order') return `组内事件序号(${selectorDescription} -> ${step.params?.timeColumn || '未选时间字段'})`
+  if (stepType === 'time_since_previous_event') return `距离上一事件(${selectorDescription} -> ${step.params?.timeColumn || '未选时间字段'})`
+  if (stepType === 'time_until_next_event') return `距离下一事件(${selectorDescription} -> ${step.params?.timeColumn || '未选时间字段'})`
+  if (stepType === 'group_value_change_flag') return `组内值变化标记(${selectorDescription} -> ${step.params?.targetColumn || '未选变化字段'} / ${step.params?.timeColumn || '未选时间字段'})`
   if (stepType === 'time_window_count') return `时间窗计数(${selectorDescription || '全量'} -> ${step.params?.timeColumn || '未选时间字段'} / ${step.params?.windowMinutes || 15} 分钟)`
   if (stepType === 'window_unique_count') return `时间窗去重数(${selectorDescription || '全量'} -> ${step.params?.targetColumn || '未选目标字段'} / ${step.params?.timeColumn || '未选时间字段'} / ${step.params?.windowMinutes || 15} 分钟)`
+  if (stepType === 'window_target_unique_count') return `时间窗目标去重数(${selectorDescription || '全量'} -> ${step.params?.targetColumn || '未选目标字段'} / ${step.params?.timeColumn || '未选时间字段'} / ${step.params?.windowMinutes || 15} 分钟)`
+  if (stepType === 'window_status_change_count') return `时间窗状态变化数(${selectorDescription || '全量'} -> ${step.params?.targetColumn || '未选状态字段'} / ${step.params?.timeColumn || '未选时间字段'} / ${step.params?.windowMinutes || 15} 分钟)`
   if (stepType === 'window_spike_flag') return `时间窗突增标记(${selectorDescription || '全量'} -> ${step.params?.timeColumn || '未选时间字段'} / ${step.params?.windowMinutes || 15} 分钟 / 阈值 ${step.params?.threshold || 10})`
   if (stepType === 'ip_features') return `IP 基础特征(${selectorDescription})`
   if (stepType === 'port_features') return `端口基础特征(${selectorDescription})`

@@ -29,6 +29,7 @@ import { buildPreviewColumns } from '../../lib/ui'
 import type {
   DatasetVersion,
   FieldAdvice,
+  FeatureHandoff,
   PreprocessOutputMode,
   PreprocessPipeline,
   PreprocessPreviewRead,
@@ -97,6 +98,7 @@ type Props = {
   onPreviewStep: (stepIndex: number, values: PreprocessFormValues) => void | Promise<void>
   onAnalyzeAdvisor: (values: PreprocessFormValues) => void | Promise<void>
   onRunSampledAdvisor: (values: PreprocessFormValues) => void | Promise<void>
+  onFeatureHandoff: (handoff: FeatureHandoff) => void
   onSelectPipeline: (pipelineId: number) => void
 }
 
@@ -521,6 +523,20 @@ export function PreprocessTab(props: Props) {
                           title: '说明',
                           dataIndex: 'reason_text',
                           key: 'reason_text',
+                        },
+                        {
+                          title: '特征承接',
+                          key: 'feature_handoff',
+                          width: 160,
+                          render: (_value: unknown, record: FieldAdvice) => (
+                            record.feature_handoff?.issue_type === 'behavior_tracking' ? (
+                              <Button size="small" onClick={() => props.onFeatureHandoff(record.feature_handoff!)}>
+                                带入行为追踪
+                              </Button>
+                            ) : (
+                              <Text type="secondary">无</Text>
+                            )
+                          ),
                         },
                       ]}
                       dataSource={props.advisor.field_advice}
