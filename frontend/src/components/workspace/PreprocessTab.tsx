@@ -121,6 +121,8 @@ export function PreprocessTab(props: Props) {
   const [form] = Form.useForm<PreprocessFormValues>()
   const watchedValues = Form.useWatch([], form)
   const [pendingRecommendedSteps, setPendingRecommendedSteps] = useState<RecommendedPreprocessStepDraft[]>([])
+  const [selectedIssueGroup, setSelectedIssueGroup] = useState<string | null>(null)
+  const [selectedActionFilter, setSelectedActionFilter] = useState<string | null>(null)
   const lastAdvisorRequestKeyRef = useRef('')
 
   useEffect(() => {
@@ -193,20 +195,49 @@ export function PreprocessTab(props: Props) {
     () => buildFieldIssueBuckets(props.columns, props.advisor?.field_advice ?? []),
     [props.columns, props.advisor?.field_advice],
   )
+  const recommendationCards = useMemo(
+    () => buildRecommendationCards(props.advisor?.recommended_steps ?? [], props.advisor?.field_advice ?? []),
+    [props.advisor?.recommended_steps, props.advisor?.field_advice],
+  )
+  const activeIssueGroup = useMemo(
+    () => issueGroups.find((group) => group.issue_type === selectedIssueGroup) ?? issueGroups[0] ?? null,
+    [issueGroups, selectedIssueGroup],
+  )
+  const visibleFieldAdvice = useMemo(() => {
+    const allowedFields = new Set(activeIssueGroup?.fields ?? [])
+    const source = props.advisor?.field_advice ?? []
+    return source.filter((record) => {
+      if (activeIssueGroup && !allowedFields.has(record.field)) return false
+      if (selectedActionFilter && record.recommended_action !== selectedActionFilter) return false
+      return true
+    })
+  }, [activeIssueGroup, props.advisor?.field_advice, selectedActionFilter])
+  const visibleRecommendationCards = useMemo(() => {
+    const allowedFields = new Set(activeIssueGroup?.fields ?? [])
+    return recommendationCards.filter((card) => {
+      if (activeIssueGroup && !card.fields.some((field) => allowedFields.has(field))) return false
+      if (selectedActionFilter && card.action !== selectedActionFilter) return false
+      return true
+    })
+  }, [activeIssueGroup, recommendationCards, selectedActionFilter])
+  const pendingAffectedFieldCount = useMemo(
+    () => new Set(pendingRecommendedSteps.flatMap((recommendation) => recommendation.step.input_selector?.columns ?? [])).size,
+    [pendingRecommendedSteps],
+  )
 
   return (
     <StageLayout
       main={
         <Space direction="vertical" size={20} className="full-width">
-          <Card title="第一步：字段整理">
+          <Card title="第一步：字段整理与训练建议">
             {props.dataset ? (
               <Form form={form} layout="vertical" onFinish={props.onRun} initialValues={{ steps: [] }}>
                 <Space direction="vertical" size={16} className="full-width">
                   <Alert
                     type="info"
                     showIcon
-                    message="先完成基础字段整理，再决定哪些字段改走特征工程。"
-                    description="这一段只聚焦补空值、类型转换、重命名和保留/移除字段。复杂特征不要在这里硬拼，后面会由训练影响助手和特征页接手。"
+                    message="先在这里完成字段整理，再把不适合直接训练的字段承接到特征工程。"
+                    description="这一段把字段问题、推荐动作和待应用托盘放在同一条操作流里。你先看字段属于哪类问题，再决定要补空值、转类型、排除，还是改走特征工程。"
                   />
                   <div className="wizard-chip-row">
                     <Tag color="blue">补空值</Tag>
@@ -214,8 +245,28 @@ export function PreprocessTab(props: Props) {
                     <Tag color="purple">重命名</Tag>
                     <Tag color="gold">保留 / 移除字段</Tag>
                   </div>
+                  <Space wrap>
+                    <Button
+                      size="small"
+                      loading={props.sampledAdvisorLoading}
+                      onClick={() => props.onRunSampledAdvisor(form.getFieldsValue(true))}
+                    >
+                      运行采样训练适配分析
+                    </Button>
+                    <Text type="secondary">
+                      快速建议会自动刷新；当你需要更接近训练阶段的判断时，再主动跑采样分析。
+                    </Text>
+                  </Space>
                   <div className="issue-bucket-grid">
-                    <Card size="small" className="issue-bucket-card" title="可直接训练">
+                    <Card
+                      size="small"
+                      className={`issue-bucket-card ${activeIssueGroup?.issue_type === 'direct_trainable' ? 'is-active' : ''}`}
+                      title="可直接训练"
+                      onClick={() => {
+                        setSelectedIssueGroup('direct_trainable')
+                        setSelectedActionFilter(null)
+                      }}
+                    >
                       <Text type="secondary">这类字段当前风险较低，可以先保留。</Text>
                       <div className="tag-wall">
                         {groupedColumns.directTrainable.length
@@ -223,7 +274,15 @@ export function PreprocessTab(props: Props) {
                           : <Text type="secondary">暂无</Text>}
                       </div>
                     </Card>
-                    <Card size="small" className="issue-bucket-card" title="建议先清洗">
+                    <Card
+                      size="small"
+                      className={`issue-bucket-card ${activeIssueGroup?.issue_type === 'needs_cleaning' ? 'is-active' : ''}`}
+                      title="建议先清洗"
+                      onClick={() => {
+                        setSelectedIssueGroup('needs_cleaning')
+                        setSelectedActionFilter(null)
+                      }}
+                    >
                       <Text type="secondary">这类字段更适合先补空值或转类型，再进入训练。</Text>
                       <div className="tag-wall">
                         {groupedColumns.needsCleaning.length
@@ -231,7 +290,15 @@ export function PreprocessTab(props: Props) {
                           : <Text type="secondary">暂无</Text>}
                       </div>
                     </Card>
-                    <Card size="small" className="issue-bucket-card" title="建议改走特征工程">
+                    <Card
+                      size="small"
+                      className={`issue-bucket-card ${activeIssueGroup?.issue_type === 'route_to_features' ? 'is-active' : ''}`}
+                      title="建议改走特征工程"
+                      onClick={() => {
+                        setSelectedIssueGroup('route_to_features')
+                        setSelectedActionFilter(null)
+                      }}
+                    >
                       <Text type="secondary">这类字段原值不适合直接训练，但很适合生成统计、复杂度或行为追踪特征。</Text>
                       <div className="tag-wall">
                         {groupedColumns.routeToFeatures.length
@@ -239,7 +306,15 @@ export function PreprocessTab(props: Props) {
                           : <Text type="secondary">暂无</Text>}
                       </div>
                     </Card>
-                    <Card size="small" className="issue-bucket-card" title="建议移除">
+                    <Card
+                      size="small"
+                      className={`issue-bucket-card ${activeIssueGroup?.issue_type === 'remove_from_output' ? 'is-active' : ''}`}
+                      title="建议移除"
+                      onClick={() => {
+                        setSelectedIssueGroup('remove_from_output')
+                        setSelectedActionFilter(null)
+                      }}
+                    >
                       <Text type="secondary">这类字段大多没有稳定信号，或容易干扰训练。</Text>
                       <div className="tag-wall">
                         {groupedColumns.removeFromOutput.length
@@ -248,9 +323,137 @@ export function PreprocessTab(props: Props) {
                       </div>
                     </Card>
                   </div>
+                  <Card
+                    size="small"
+                    className="nested-card"
+                    title={activeIssueGroup ? `字段建议层：${activeIssueGroup.title}` : '字段建议层'}
+                    extra={activeIssueGroup ? <Tag color={getIssueGroupColor(activeIssueGroup.issue_type)}>{activeIssueGroup.fields.length} 个字段</Tag> : null}
+                    loading={props.advisorLoading}
+                  >
+                    {props.advisor ? (
+                      <Space direction="vertical" size={16} className="full-width">
+                        <Text type="secondary">{activeIssueGroup?.description ?? '正在根据当前字段和步骤链整理问题分组。'}</Text>
+                        <div className="action-card-grid">
+                          {visibleRecommendationCards.length ? (
+                            visibleRecommendationCards.map((card) => (
+                              <Card
+                                key={card.id}
+                                size="small"
+                                className={`action-card ${selectedActionFilter === card.action ? 'is-active' : ''}`}
+                                title={card.title}
+                                extra={(
+                                  card.action === 'move_to_feature_engineering' ? (
+                                    <Button
+                                      size="small"
+                                      type="default"
+                                      onClick={() => setSelectedActionFilter((current) => current === card.action ? null : card.action)}
+                                    >
+                                      查看承接字段
+                                    </Button>
+                                  ) : (
+                                    <Button
+                                      size="small"
+                                      type="default"
+                                      onClick={() => queueRecommendedStep(card.recommendation)}
+                                    >
+                                      加入待应用托盘
+                                    </Button>
+                                  )
+                                )}
+                                onClick={() => setSelectedActionFilter((current) => current === card.action ? null : card.action)}
+                              >
+                                <Space direction="vertical" size={8} className="full-width">
+                                  <Text type="secondary">{card.description}</Text>
+                                  <div className="tag-wall">
+                                    {card.fields.map((field) => <Tag key={`${card.id}-${field}`}>{field}</Tag>)}
+                                  </div>
+                                  <Text type="secondary">
+                                    {card.action === 'move_to_feature_engineering'
+                                      ? '这些字段会直接承接到特征页对应入口，不会写入预处理步骤链。'
+                                      : `将生成：${describePersistedStep(card.recommendation.step)}`}
+                                  </Text>
+                                </Space>
+                              </Card>
+                            ))
+                          ) : (
+                            <Empty description="当前问题组没有可直接加入托盘的建议动作。" />
+                          )}
+                        </div>
+                        <Card size="small" title={selectedActionFilter ? `字段明细：${getRecommendedActionLabel(selectedActionFilter)}` : '字段明细'}>
+                          <Space direction="vertical" size={12} className="full-width">
+                            {visibleFieldAdvice.length ? visibleFieldAdvice.map((record) => (
+                              <Card key={record.field} size="small" type="inner">
+                                <Space direction="vertical" size={8} className="full-width">
+                                  <Space wrap>
+                                    <Tag color={getAdviceStatusColor(record.status)}>{getAdviceStatusLabel(record.status)}</Tag>
+                                    <Text strong>{record.field}</Text>
+                                    <Tag>{getRecommendedActionLabel(record.recommended_action)}</Tag>
+                                  </Space>
+                                  <Text type="secondary">{record.reason_text}</Text>
+                                  <Space wrap>
+                                    {record.feature_handoff ? (
+                                      <Button size="small" onClick={() => props.onFeatureHandoff(record.feature_handoff!)}>
+                                        {getFeatureHandoffLabel(record.feature_handoff)}
+                                      </Button>
+                                    ) : null}
+                                    {findRecommendationForField(props.advisor?.recommended_steps ?? [], record.field) ? (
+                                      <Button
+                                        size="small"
+                                        onClick={() => queueRecommendedStep(findRecommendationForField(props.advisor?.recommended_steps ?? [], record.field)!)}
+                                      >
+                                        加入待应用托盘
+                                      </Button>
+                                    ) : null}
+                                  </Space>
+                                </Space>
+                              </Card>
+                            )) : (
+                              <Empty description="当前筛选条件下没有字段明细。" />
+                            )}
+                          </Space>
+                        </Card>
+                        <Card
+                          size="small"
+                          title="待应用托盘"
+                          extra={pendingRecommendedSteps.length ? <Tag color="purple">{pendingRecommendedSteps.length} 条建议</Tag> : null}
+                        >
+                          <Space direction="vertical" size={12} className="full-width">
+                            {pendingRecommendedSteps.length ? (
+                              pendingRecommendedSteps.map((recommendation) => (
+                                <div key={recommendation.recommendation_id} className="pending-recommendation-row">
+                                  <div className="pending-recommendation-copy">
+                                    <Space wrap>
+                                      <Tag color="purple">{recommendation.title}</Tag>
+                                      <Tag>{describePersistedStep(recommendation.step)}</Tag>
+                                    </Space>
+                                    <Text type="secondary">{recommendation.description}</Text>
+                                  </div>
+                                  <Button size="small" onClick={() => removePendingRecommendation(recommendation.recommendation_id)}>
+                                    移除
+                                  </Button>
+                                </div>
+                              ))
+                            ) : (
+                              <Text type="secondary">建议动作会先进入托盘，确认后再写入当前预处理草稿。</Text>
+                            )}
+                            <Space wrap>
+                              <Button type="default" disabled={!pendingRecommendedSteps.length} onClick={applyPendingRecommendations}>
+                                应用到预处理草稿
+                              </Button>
+                              <Button disabled={!pendingRecommendedSteps.length} onClick={() => setPendingRecommendedSteps([])}>
+                                清空托盘
+                              </Button>
+                            </Space>
+                          </Space>
+                        </Card>
+                      </Space>
+                    ) : (
+                      <Text type="secondary">正在根据当前字段和步骤链生成训练影响建议。</Text>
+                    )}
+                  </Card>
                 </Space>
 
-                <Divider>基础整理与高级微调</Divider>
+                <Divider>基础整理与专家微调</Divider>
                 <Form.Item name="name" label="流水线名称" rules={[{ required: true, message: '请输入流水线名称' }]}>
                   <Input placeholder="例如：dataset-v1-prep-2" />
                 </Form.Item>
@@ -259,7 +462,7 @@ export function PreprocessTab(props: Props) {
                   items={[
                     {
                       key: 'advanced-steps',
-                      label: '高级步骤链（需要精细控制时再展开）',
+                      label: '专家微调（当推荐动作不够时，再精细编辑步骤）',
                       children: (
                         <Form.List name="steps">
                           {(fields, { add, remove, move }) => (
@@ -496,121 +699,7 @@ export function PreprocessTab(props: Props) {
             )}
           </Card>
 
-          <Card title="第二步：训练影响助手">
-            {props.advisor ? (
-              <Space direction="vertical" size={16} className="full-width">
-                <Descriptions
-                  size="small"
-                  column={2}
-                  items={[
-                    { key: 'direct', label: '可直接参与训练', children: props.advisor.summary.direct_trainable_fields },
-                    { key: 'risk', label: '高风险字段', children: props.advisor.summary.high_risk_fields },
-                    { key: 'pending', label: '待确认字段', children: props.advisor.summary.pending_fields },
-                    { key: 'basis', label: '当前依据', children: props.advisor.summary.analysis_basis },
-                  ]}
-                />
-                <div className="advisor-issue-grid">
-                  {issueGroups.map((group) => (
-                    <Card key={group.issue_type} size="small" className="issue-group-card" title={group.title}>
-                      <Space direction="vertical" size={10} className="full-width">
-                        <Text type="secondary">{group.description}</Text>
-                        <div className="tag-wall">
-                          {group.fields.map((field) => (
-                            <Tag key={`${group.issue_type}-${field}`} color={getIssueGroupColor(group.issue_type)}>{field}</Tag>
-                          ))}
-                        </div>
-                      </Space>
-                    </Card>
-                  ))}
-                </div>
-                <Card size="small" title="问题字段卡片">
-                  <Space direction="vertical" size={12} className="full-width">
-                    {props.advisor.field_advice.map((record) => (
-                      <Card key={record.field} size="small" type="inner">
-                        <Space direction="vertical" size={8} className="full-width">
-                          <Space wrap>
-                            <Tag color={getAdviceStatusColor(record.status)}>{getAdviceStatusLabel(record.status)}</Tag>
-                            <Text strong>{record.field}</Text>
-                            <Tag>{getRecommendedActionLabel(record.recommended_action)}</Tag>
-                          </Space>
-                          <Text type="secondary">{record.reason_text}</Text>
-                          <Space wrap>
-                            {record.feature_handoff ? (
-                              <Button size="small" onClick={() => props.onFeatureHandoff(record.feature_handoff!)}>
-                                {getFeatureHandoffLabel(record.feature_handoff)}
-                              </Button>
-                            ) : null}
-                            {findRecommendationForField(props.advisor?.recommended_steps ?? [], record.field) ? (
-                              <Button
-                                size="small"
-                                onClick={() => queueRecommendedStep(findRecommendationForField(props.advisor?.recommended_steps ?? [], record.field)!)}
-                              >
-                                加入整理草稿
-                              </Button>
-                            ) : null}
-                          </Space>
-                        </Space>
-                      </Card>
-                    ))}
-                  </Space>
-                </Card>
-                <Card size="small" title="建议动作">
-                  <Space direction="vertical" size={12} className="full-width">
-                    {props.advisor.recommended_steps.length ? (
-                      props.advisor.recommended_steps.map((recommendation) => (
-                        <Card
-                          key={recommendation.recommendation_id}
-                          size="small"
-                          type="inner"
-                          title={recommendation.title}
-                          extra={<Button size="small" onClick={() => queueRecommendedStep(recommendation)}>加入待应用草稿</Button>}
-                        >
-                          <Text type="secondary">{recommendation.description}</Text>
-                        </Card>
-                      ))
-                    ) : (
-                      <Text type="secondary">当前步骤链下没有新的推荐预处理草稿。</Text>
-                    )}
-                  </Space>
-                </Card>
-                <Card
-                  size="small"
-                  title="采样训练适配分析"
-                  extra={(
-                    <Button
-                      size="small"
-                      loading={props.sampledAdvisorLoading}
-                      onClick={() => props.onRunSampledAdvisor(form.getFieldsValue(true))}
-                    >
-                      运行采样训练适配分析
-                    </Button>
-                  )}
-                >
-                  {props.sampledAdvisorRun?.result ? (
-                    <Descriptions
-                      column={1}
-                      items={[
-                        { key: 'status', label: '状态', children: <Tag color={props.sampledAdvisorRun.status === 'completed' ? 'green' : props.sampledAdvisorRun.status === 'failed' ? 'red' : 'processing'}>{props.sampledAdvisorRun.status}</Tag> },
-                        { key: 'sample', label: '采样行数', children: props.sampledAdvisorRun.sample_size || props.sampledAdvisorRun.result.sample_size },
-                        { key: 'generated', label: '最近完成', children: new Date(props.sampledAdvisorRun.result.generated_at).toLocaleString('zh-CN') },
-                        { key: 'suggested', label: '建议训练字段', children: props.sampledAdvisorRun.result.summary.suggested_training_columns.join(', ') || '无' },
-                      ]}
-                    />
-                  ) : (
-                    <Alert
-                      type="info"
-                      showIcon
-                      message={props.sampledAdvisorLoading ? '正在后台运行采样训练适配分析…' : '需要更接近训练阶段的建议时，再跑一次采样分析。'}
-                    />
-                  )}
-                </Card>
-              </Space>
-            ) : (
-              <Text type="secondary">正在根据当前字段和步骤链生成训练影响建议。</Text>
-            )}
-          </Card>
-
-          <Card title="第三步：确认预处理输出">
+          <Card title="第二步：确认预处理输出">
             <Space direction="vertical" size={16} className="full-width">
               <Descriptions
                 column={1}
@@ -627,31 +716,17 @@ export function PreprocessTab(props: Props) {
                       </div>
                     ) : '暂无',
                   },
+                  {
+                    key: 'sampled-status',
+                    label: '采样训练适配分析',
+                    children: props.sampledAdvisorRun?.result
+                      ? `${props.sampledAdvisorRun.status} / ${props.sampledAdvisorRun.sample_size || props.sampledAdvisorRun.result.sample_size} 行`
+                      : props.sampledAdvisorLoading
+                        ? '正在后台运行采样分析'
+                        : '未运行',
+                  },
                 ]}
               />
-              {pendingRecommendedSteps.length ? (
-                <Card size="small" title="待应用草稿">
-                  <Space direction="vertical" size={12} className="full-width">
-                    {pendingRecommendedSteps.map((recommendation) => (
-                      <Space key={recommendation.recommendation_id} className="full-width" align="start">
-                        <Tag color="purple">{recommendation.title}</Tag>
-                        <Text className="full-width">{recommendation.description}</Text>
-                        <Button size="small" onClick={() => removePendingRecommendation(recommendation.recommendation_id)}>
-                          移除
-                        </Button>
-                      </Space>
-                    ))}
-                    <Space>
-                      <Button type="default" onClick={applyPendingRecommendations}>
-                        应用到步骤链
-                      </Button>
-                      <Button onClick={() => setPendingRecommendedSteps([])}>
-                        清空
-                      </Button>
-                    </Space>
-                  </Space>
-                </Card>
-              ) : null}
               <Space>
                 <Button type="primary" icon={<NodeIndexOutlined />} loading={props.running} onClick={() => form.submit()}>
                   运行预处理
@@ -706,7 +781,7 @@ export function PreprocessTab(props: Props) {
             <Card
               size="small"
               className="nested-card"
-              title="结果侧栏"
+              title="解释与确认"
               extra={props.advisor ? <Tag color="cyan">{props.advisor.analysis_mode === 'quick' ? '快速建议' : '采样建议'}</Tag> : null}
               loading={props.advisorLoading}
             >
@@ -727,13 +802,15 @@ export function PreprocessTab(props: Props) {
                     <Tag color="gold">待调整: {props.advisor.summary.pending_fields}</Tag>
                     <Tag>总字段: {props.advisor.summary.total_fields}</Tag>
                   </Space>
-                  <div className="tag-wall">
-                    {issueGroups.map((group) => (
-                      <Tag color={getIssueGroupColor(group.issue_type)} key={`sidebar-${group.issue_type}`}>
-                        {group.title}: {group.fields.length}
-                      </Tag>
-                    ))}
-                  </div>
+                  <Card size="small" title="待应用托盘摘要">
+                    <Descriptions
+                      column={1}
+                      items={[
+                        { key: 'tray-count', label: '待应用建议', children: pendingRecommendedSteps.length },
+                        { key: 'tray-fields', label: '影响字段数', children: pendingAffectedFieldCount },
+                      ]}
+                    />
+                  </Card>
                   <div>
                     <Text strong>建议继续进入特征工程：</Text>
                     <div className="tag-wall">
@@ -742,6 +819,18 @@ export function PreprocessTab(props: Props) {
                         : <Text type="secondary">暂无</Text>}
                     </div>
                   </div>
+                  {props.sampledAdvisorRun?.result ? (
+                    <Card size="small" title="采样分析摘要">
+                      <Descriptions
+                        column={1}
+                        items={[
+                          { key: 'sample-status', label: '状态', children: <Tag color={props.sampledAdvisorRun.status === 'completed' ? 'green' : props.sampledAdvisorRun.status === 'failed' ? 'red' : 'processing'}>{props.sampledAdvisorRun.status}</Tag> },
+                          { key: 'sample-size', label: '采样行数', children: props.sampledAdvisorRun.sample_size || props.sampledAdvisorRun.result.sample_size },
+                          { key: 'sample-fields', label: '建议训练字段', children: props.sampledAdvisorRun.result.summary.suggested_training_columns.join(', ') || '无' },
+                        ]}
+                      />
+                    </Card>
+                  ) : null}
                 </Space>
               ) : (
                 <Text type="secondary">正在根据当前字段和步骤链生成训练影响建议。</Text>
@@ -1104,6 +1193,66 @@ function getFeatureHandoffLabel(handoff: FeatureHandoff) {
   if (handoff.task_category === 'high_cardinality') return '改走高基数特征'
   if (handoff.task_category === 'behavior_tracking') return '改走行为追踪特征'
   return '带入推荐特征方案'
+}
+
+function buildRecommendationCards(
+  recommendations: RecommendedPreprocessStepDraft[],
+  fieldAdvice: FieldAdvice[],
+) {
+  const featureFields = fieldAdvice.filter((record) => record.recommended_action === 'move_to_feature_engineering')
+  const cards = recommendations.map((recommendation) => {
+    const stepType = recommendation.step.step_type ?? recommendation.step.type
+    const targetType = recommendation.step.params?.target_type
+    let action = 'fill_null'
+    let title = recommendation.title
+
+    if (stepType === 'cast_type' && targetType === 'datetime') {
+      action = 'cast_datetime'
+      title = '转成时间'
+    } else if (stepType === 'cast_type') {
+      action = 'cast_numeric'
+      title = '转成数值'
+    } else if (stepType === 'select_columns') {
+      action = 'exclude_column'
+      title = '排除字段'
+    } else if (stepType === 'fill_null') {
+      action = 'fill_null'
+      title = '补空值'
+    }
+
+    return {
+      id: recommendation.recommendation_id,
+      action,
+      title,
+      description: recommendation.description,
+      fields: recommendation.step.input_selector?.columns ?? [],
+      recommendation,
+    }
+  })
+
+  if (featureFields.length) {
+    cards.push({
+      id: 'feature-handoff',
+      action: 'move_to_feature_engineering',
+      title: '改走特征工程',
+      description: '这些字段原值不适合直接训练，更适合进入文本复杂度、高基数或行为追踪特征流程。',
+      fields: featureFields.map((record) => record.field),
+      recommendation: {
+        recommendation_id: 'feature-handoff',
+        title: '改走特征工程',
+        description: '通过字段卡片直接跳转到特征页推荐入口。',
+        step: {
+          step_id: 'feature_handoff_only',
+          step_type: 'select_columns',
+          params: {},
+          input_selector: { mode: 'explicit', columns: [] },
+          output_mode: { mode: 'inplace' },
+        },
+      },
+    })
+  }
+
+  return cards
 }
 
 function findRecommendationForField(
