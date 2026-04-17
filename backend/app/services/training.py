@@ -799,15 +799,72 @@ def _sample_unsupervised_frame(frame: pd.DataFrame, point_limit: int) -> pd.Data
     anomaly_frame = frame.loc[frame["predicted_label"] == "anomaly"].copy()
     normal_frame = frame.loc[frame["predicted_label"] != "anomaly"].copy()
 
-    if len(anomaly_frame) >= point_limit:
+    if anomaly_frame.empty:
+        return normal_frame.sample(n=point_limit, random_state=42).sort_values("sample_index").reset_index(drop=True)
+    if normal_frame.empty:
         return anomaly_frame.nlargest(point_limit, "anomaly_score").sort_values("sample_index").reset_index(drop=True)
 
-    normal_limit = max(point_limit - len(anomaly_frame), 0)
-    if len(normal_frame) > normal_limit:
-        normal_frame = normal_frame.sample(n=normal_limit, random_state=42)
+    anomaly_target, normal_target = _calculate_stratified_sample_targets(
+        total_limit=point_limit,
+        anomaly_count=len(anomaly_frame),
+        normal_count=len(normal_frame),
+    )
+
+    if len(anomaly_frame) > anomaly_target:
+        anomaly_frame = anomaly_frame.nlargest(anomaly_target, "anomaly_score")
+    if len(normal_frame) > normal_target:
+        normal_frame = normal_frame.sample(n=normal_target, random_state=42)
 
     sampled = pd.concat([anomaly_frame, normal_frame], ignore_index=True)
     return sampled.sort_values("sample_index").reset_index(drop=True)
+
+
+def _calculate_stratified_sample_targets(
+    *,
+    total_limit: int,
+    anomaly_count: int,
+    normal_count: int,
+) -> tuple[int, int]:
+    total_count = anomaly_count + normal_count
+    if total_count <= total_limit:
+        return anomaly_count, normal_count
+
+    anomaly_target = int(round(total_limit * (anomaly_count / total_count)))
+    normal_target = total_limit - anomaly_target
+
+    if anomaly_count > 0 and anomaly_target == 0:
+        anomaly_target = 1
+        normal_target = max(total_limit - anomaly_target, 0)
+    if normal_count > 0 and normal_target == 0:
+        normal_target = 1
+        anomaly_target = max(total_limit - normal_target, 0)
+
+    anomaly_target = min(anomaly_target, anomaly_count)
+    normal_target = min(normal_target, normal_count)
+
+    remaining = total_limit - (anomaly_target + normal_target)
+    if remaining <= 0:
+        return anomaly_target, normal_target
+
+    capacities = [
+        ["anomaly", anomaly_count - anomaly_target, anomaly_count / total_count],
+        ["normal", normal_count - normal_target, normal_count / total_count],
+    ]
+    capacities.sort(key=lambda item: (item[2], item[1]), reverse=True)
+
+    for label, capacity, _share in capacities:
+        if remaining <= 0:
+            break
+        if capacity <= 0:
+            continue
+        allocation = min(capacity, remaining)
+        if label == "anomaly":
+            anomaly_target += allocation
+        else:
+            normal_target += allocation
+        remaining -= allocation
+
+    return anomaly_target, normal_target
 
 
 def _build_score_points(frame: pd.DataFrame) -> list[dict[str, Any]]:

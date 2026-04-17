@@ -7,7 +7,12 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.schemas.training import TrainingRequest
-from app.services.training import _build_signal_summaries, _select_training_feature_columns
+from app.services.training import (
+    _build_signal_summaries,
+    _calculate_stratified_sample_targets,
+    _sample_unsupervised_frame,
+    _select_training_feature_columns,
+)
 from app.models.feature_pipeline import FeaturePipeline
 
 
@@ -211,6 +216,59 @@ class TrainingFeatureSelectionTests(unittest.TestCase):
         self.assertEqual(spike_summaries[0]["normal_active_count"], 0)
         self.assertEqual(count_summaries[0]["column"], "source_15m_count")
         self.assertGreater(count_summaries[0]["anomaly_mean"], count_summaries[0]["normal_mean"])
+
+
+class TrainingSamplingTests(unittest.TestCase):
+    def test_sampling_keeps_both_classes_when_anomalies_exceed_limit(self):
+        frame = pd.DataFrame(
+            {
+                "predicted_label": ["anomaly"] * 190 + ["normal"] * 10,
+                "anomaly_score": [float(1000 - index) for index in range(200)],
+                "sample_index": list(range(200)),
+            }
+        )
+
+        sampled = _sample_unsupervised_frame(frame, point_limit=100)
+
+        label_counts = sampled["predicted_label"].value_counts().to_dict()
+        self.assertEqual(len(sampled.index), 100)
+        self.assertGreater(label_counts.get("anomaly", 0), 0)
+        self.assertGreater(label_counts.get("normal", 0), 0)
+
+    def test_sampling_preserves_minimum_presence_for_extreme_ratios(self):
+        frame = pd.DataFrame(
+            {
+                "predicted_label": ["anomaly"] * 999 + ["normal"],
+                "anomaly_score": [float(2000 - index) for index in range(1000)],
+                "sample_index": list(range(1000)),
+            }
+        )
+
+        sampled = _sample_unsupervised_frame(frame, point_limit=100)
+
+        label_counts = sampled["predicted_label"].value_counts().to_dict()
+        self.assertEqual(label_counts.get("normal", 0), 1)
+        self.assertEqual(label_counts.get("anomaly", 0), 99)
+
+    def test_target_calculation_stays_close_to_source_ratio(self):
+        anomaly_target, normal_target = _calculate_stratified_sample_targets(
+            total_limit=100,
+            anomaly_count=30,
+            normal_count=70,
+        )
+
+        self.assertEqual((anomaly_target, normal_target), (30, 70))
+
+    def test_target_calculation_preserves_minimum_presence_for_small_class(self):
+        anomaly_target, normal_target = _calculate_stratified_sample_targets(
+            total_limit=100,
+            anomaly_count=5,
+            normal_count=500,
+        )
+
+        self.assertEqual(anomaly_target, 1)
+        self.assertEqual(normal_target, 99)
+        self.assertEqual(anomaly_target + normal_target, 100)
 
 
 if __name__ == "__main__":
