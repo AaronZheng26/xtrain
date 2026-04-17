@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Alert,
   Button,
@@ -32,6 +32,7 @@ import type {
   DatasetVersion,
   FeaturePipeline,
   FeaturePreviewRead,
+  FeatureRecipe,
   FeatureTaskCategory,
   FeatureTaskCategoryId,
   FeatureStep,
@@ -166,6 +167,12 @@ type Props = {
   onSelectPipeline: (pipelineId: number) => void
 }
 
+type FeatureWizardState = {
+  mode: 'task_home' | 'handoff_wizard'
+  selectedRecipeId: string | null
+  pendingRecipe: FeatureRecipe | null
+}
+
 const STEP_TYPE_OPTIONS: Array<{ label: string; value: DraftFeatureStepType }> = [
   { label: '字段选择', value: 'select_features' },
   { label: '时间派生', value: 'derive_time_parts' },
@@ -293,6 +300,11 @@ function isFeatureTaskCategoryId(value: string | undefined): value is FeatureTas
 
 export function FeatureTab(props: Props) {
   const [form] = Form.useForm<FeatureFormValues>()
+  const [featureWizardState, setFeatureWizardState] = useState<FeatureWizardState>({
+    mode: 'task_home',
+    selectedRecipeId: null,
+    pendingRecipe: null,
+  })
   const watchedValues = Form.useWatch([], form)
   const mode = watchedValues?.mode ?? 'quick'
   const quickStrategy = watchedValues?.quickStrategy ?? (isFeatureTaskCategoryId(props.featureHandoff?.task_category) ? props.featureHandoff.task_category : 'text_complexity')
@@ -414,6 +426,71 @@ export function FeatureTab(props: Props) {
     quickStrategy,
     quickTaskConfig,
   ])
+  const featureRecipes = useMemo(
+    () => buildFeatureRecipes({
+      handoff: props.featureHandoff,
+      quickStrategy,
+      selectedTaskCategory,
+      behaviorTrackingSummary,
+      behaviorTrackingSteps,
+      quickTaskPreview,
+      quickTaskSteps,
+      recommendedTrainingColumns,
+      analysisRetainedColumns,
+    }),
+    [
+      analysisRetainedColumns,
+      behaviorTrackingSteps,
+      behaviorTrackingSummary,
+      props.featureHandoff,
+      quickStrategy,
+      quickTaskPreview,
+      quickTaskSteps,
+      recommendedTrainingColumns,
+      selectedTaskCategory,
+    ],
+  )
+  const effectiveWizardMode = props.featureHandoff ? 'handoff_wizard' : featureWizardState.mode
+  const effectiveSelectedRecipeId = featureWizardState.selectedRecipeId
+    ?? props.featureHandoff?.recipe_ids[0]
+    ?? featureRecipes[0]?.id
+    ?? null
+  const selectedRecipe = useMemo(
+    () => featureRecipes.find((recipe) => recipe.id === effectiveSelectedRecipeId) ?? featureRecipes[0] ?? null,
+    [effectiveSelectedRecipeId, featureRecipes],
+  )
+  const isHandoffWizardActive = mode === 'quick' && effectiveWizardMode === 'handoff_wizard' && Boolean(props.featureHandoff)
+
+  function handleSelectRecipe(recipe: FeatureRecipe) {
+    setFeatureWizardState((current) => ({
+      ...current,
+      selectedRecipeId: recipe.id,
+      pendingRecipe: recipe,
+    }))
+  }
+
+  function handleAcceptRecipe() {
+    if (!selectedRecipe) return
+    form.setFieldsValue({
+      mode: 'advanced',
+      steps: selectedRecipe.recommended_steps.map(toDraftFromPersistedStep),
+    })
+    setFeatureWizardState({
+      mode: 'task_home',
+      selectedRecipeId: selectedRecipe.id,
+      pendingRecipe: selectedRecipe,
+    })
+    props.onClearFeatureHandoff()
+  }
+
+  function handleReturnToTaskHome() {
+    setFeatureWizardState((current) => ({
+      ...current,
+      mode: 'task_home',
+      pendingRecipe: selectedRecipe,
+    }))
+    props.onClearFeatureHandoff()
+  }
 
   function handleSubmit(values: FeatureFormValues) {
     if (values.mode === 'quick' && values.quickStrategy === 'behavior_tracking') {
@@ -475,53 +552,135 @@ export function FeatureTab(props: Props) {
 
                 {mode === 'quick' ? (
                   <Space direction="vertical" size={16} className="full-width">
-                    <Card size="small" className="nested-card" title="任务入口">
-                      <Space direction="vertical" size={16} className="full-width">
-                        <Alert
-                          type="info"
-                          showIcon
-                          message="先选择字段问题，再让系统给出推荐配方。"
-                          description="首屏按任务入口组织，不再要求你先理解算子名。点击对应入口后，系统会自动生成推荐草稿，必要时再进入高级微调。"
-                        />
-                        <div className="task-category-grid">
-                          {FEATURE_TASK_CATEGORIES.map((category) => (
-                            <Card
-                              key={category.id}
-                              size="small"
-                              hoverable
-                              className={`task-category-card ${quickStrategy === category.id ? 'is-active' : ''}`}
-                              onClick={() => form.setFieldValue('quickStrategy', category.id)}
-                            >
-                              <Space direction="vertical" size={8} className="full-width">
-                                <Text strong>{category.title}</Text>
-                                <Text type="secondary">{category.description}</Text>
-                                <div className="tag-wall">
-                                  {category.recommended_for.map((item) => (
-                                    <Tag key={`${category.id}-${item}`}>{item}</Tag>
-                                  ))}
+                    {isHandoffWizardActive && props.featureHandoff ? (
+                      <Card size="small" className="nested-card" title="预处理承接向导">
+                        <Space direction="vertical" size={16} className="full-width">
+                          <Alert
+                            type="info"
+                            showIcon
+                            message="这一步来自预处理页的字段建议。先确认推荐方案，再生成特征草稿。"
+                            description="这里不会直接把步骤链写入当前草稿。你先看来源、推荐任务和将生成的训练特征，确认后再生成草稿。"
+                          />
+                          <Descriptions
+                            column={1}
+                            items={[
+                              { key: 'source-group', label: '来源问题组', children: props.featureHandoff.source_issue_group_title ?? '预处理字段建议' },
+                              { key: 'reason', label: '推荐原因', children: props.featureHandoff.source_reason_text ?? '该字段原值不适合直接训练，建议转成更稳定的统计或行为特征。' },
+                              { key: 'task', label: '推荐任务入口', children: selectedTaskCategory?.title ?? '行为追踪特征' },
+                              { key: 'field', label: '推荐字段', children: props.featureHandoff.recommended_group_key || '待确认' },
+                              { key: 'time', label: '推荐时间字段', children: props.featureHandoff.recommended_time_columns.join(', ') || '无' },
+                              { key: 'targets', label: '推荐目标字段', children: props.featureHandoff.recommended_target_columns.join(', ') || '无' },
+                            ]}
+                          />
+                          <div className="recipe-card-grid">
+                            {featureRecipes.map((recipe) => (
+                              <Card
+                                key={recipe.id}
+                                size="small"
+                                hoverable
+                                className={`task-category-card ${selectedRecipe?.id === recipe.id ? 'is-active' : ''}`}
+                                onClick={() => handleSelectRecipe(recipe)}
+                              >
+                                <Space direction="vertical" size={8} className="full-width">
+                                  <Text strong>{recipe.title}</Text>
+                                  <Text type="secondary">{recipe.description}</Text>
+                                  <div className="tag-wall">
+                                    {recipe.generated_feature_descriptions.map((item) => (
+                                      <Tag color="cyan" key={`${recipe.id}-${item}`}>{item}</Tag>
+                                    ))}
+                                  </div>
+                                </Space>
+                              </Card>
+                            ))}
+                          </div>
+                          {selectedRecipe ? (
+                            <Card size="small" type="inner" title="当前推荐方案">
+                              <Space direction="vertical" size={12} className="full-width">
+                                <Text>{selectedRecipe.description}</Text>
+                                <div>
+                                  <Text strong>将生成的特征</Text>
+                                  <div className="tag-wall">
+                                    {selectedRecipe.generated_feature_descriptions.map((item) => (
+                                      <Tag color="green" key={`generated-${item}`}>{item}</Tag>
+                                    ))}
+                                  </div>
                                 </div>
+                                <div>
+                                  <Text strong>推荐进入训练</Text>
+                                  <div className="tag-wall">
+                                    {selectedRecipe.training_candidate_descriptions.map((item) => (
+                                      <Tag color="green" key={`train-${item}`}>{item}</Tag>
+                                    ))}
+                                  </div>
+                                </div>
+                                <div>
+                                  <Text strong>仅保留作分析</Text>
+                                  <div className="tag-wall">
+                                    {selectedRecipe.analysis_retained_descriptions.map((item) => (
+                                      <Tag color="gold" key={`analysis-${item}`}>{item}</Tag>
+                                    ))}
+                                  </div>
+                                </div>
+                                <Space wrap>
+                                  <Button type="primary" onClick={handleAcceptRecipe}>
+                                    确认生成特征草稿
+                                  </Button>
+                                  <Button onClick={handleReturnToTaskHome}>返回任务首页重新选择</Button>
+                                </Space>
                               </Space>
                             </Card>
-                          ))}
-                          <Card
-                            size="small"
-                            hoverable
-                            className={`task-category-card ${quickStrategy === 'template' ? 'is-active' : ''}`}
-                            onClick={() => form.setFieldValue('quickStrategy', 'template')}
-                          >
-                            <Space direction="vertical" size={8} className="full-width">
-                              <Text strong>日志模板</Text>
-                              <Text type="secondary">如果你已经有一套现成模板，仍然可以直接套用。</Text>
-                            </Space>
-                          </Card>
-                        </div>
-                      </Space>
-                    </Card>
+                          ) : null}
+                        </Space>
+                      </Card>
+                    ) : (
+                      <Card size="small" className="nested-card" title="任务入口">
+                        <Space direction="vertical" size={16} className="full-width">
+                          <Alert
+                            type="info"
+                            showIcon
+                            message="先选择字段问题，再让系统给出推荐配方。"
+                            description="首屏按任务入口组织，不再要求你先理解算子名。点击对应入口后，系统会自动生成推荐草稿，必要时再进入高级微调。"
+                          />
+                          <div className="task-category-grid">
+                            {FEATURE_TASK_CATEGORIES.map((category) => (
+                              <Card
+                                key={category.id}
+                                size="small"
+                                hoverable
+                                className={`task-category-card ${quickStrategy === category.id ? 'is-active' : ''}`}
+                                onClick={() => form.setFieldValue('quickStrategy', category.id)}
+                              >
+                                <Space direction="vertical" size={8} className="full-width">
+                                  <Text strong>{category.title}</Text>
+                                  <Text type="secondary">{category.description}</Text>
+                                  <div className="tag-wall">
+                                    {category.recommended_for.map((item) => (
+                                      <Tag key={`${category.id}-${item}`}>{item}</Tag>
+                                    ))}
+                                  </div>
+                                </Space>
+                              </Card>
+                            ))}
+                            <Card
+                              size="small"
+                              hoverable
+                              className={`task-category-card ${quickStrategy === 'template' ? 'is-active' : ''}`}
+                              onClick={() => form.setFieldValue('quickStrategy', 'template')}
+                            >
+                              <Space direction="vertical" size={8} className="full-width">
+                                <Text strong>日志模板</Text>
+                                <Text type="secondary">如果你已经有一套现成模板，仍然可以直接套用。</Text>
+                              </Space>
+                            </Card>
+                          </div>
+                        </Space>
+                      </Card>
+                    )}
 
                     {quickStrategy === 'behavior_tracking' ? (
                       <Card size="small" className="nested-card" title="行为追踪特征">
                         <Space direction="vertical" size={16} className="full-width">
-                          {props.featureHandoff ? (
+                          {props.featureHandoff && !isHandoffWizardActive ? (
                             <Alert
                               type="info"
                               showIcon
@@ -612,7 +771,7 @@ export function FeatureTab(props: Props) {
                     ) : (
                       <Card size="small" className="nested-card" title={selectedTaskCategory?.title ?? '推荐特征配方'}>
                         <Space direction="vertical" size={16} className="full-width">
-                          {props.featureHandoff && props.featureHandoff.task_category === quickStrategy ? (
+                          {props.featureHandoff && props.featureHandoff.task_category === quickStrategy && !isHandoffWizardActive ? (
                             <Alert
                               type="info"
                               showIcon
@@ -931,8 +1090,43 @@ export function FeatureTab(props: Props) {
           <DetailPanel title="特征详情" extra={props.selectedPipeline ? <Tag color="cyan">{props.selectedPipeline.name}</Tag> : null}>
             <Space direction="vertical" size={16} className="full-width">
               {mode === 'quick' ? (
-                <Card size="small" className="nested-card" title={quickStrategy === 'behavior_tracking' ? '行为追踪摘要' : '模板摘要'}>
-                  {quickStrategy === 'behavior_tracking' ? (
+                <Card
+                  size="small"
+                  className="nested-card"
+                  title={
+                    isHandoffWizardActive
+                      ? '承接向导摘要'
+                      : quickStrategy === 'behavior_tracking'
+                        ? '行为追踪摘要'
+                        : quickStrategy === 'template'
+                          ? '模板摘要'
+                          : '任务摘要'
+                  }
+                >
+                  {isHandoffWizardActive && props.featureHandoff ? (
+                    <Space direction="vertical" size={12} className="full-width">
+                      <Descriptions
+                        column={1}
+                        items={[
+                          { key: 'handoff-task', label: '推荐任务', children: selectedTaskCategory?.title ?? '行为追踪特征' },
+                          { key: 'handoff-field', label: '推荐字段', children: props.featureHandoff.recommended_group_key || '待确认' },
+                          { key: 'handoff-source', label: '来源', children: props.featureHandoff.source_issue_group_title ?? '预处理字段建议' },
+                        ]}
+                      />
+                      {selectedRecipe ? (
+                        <>
+                          <Text>{selectedRecipe.description}</Text>
+                          <Space wrap>
+                            {selectedRecipe.generated_feature_descriptions.map((item) => (
+                              <Tag color="green" key={`handoff-${item}`}>{item}</Tag>
+                            ))}
+                          </Space>
+                        </>
+                      ) : (
+                        <Text type="secondary">等待生成推荐方案。</Text>
+                      )}
+                    </Space>
+                  ) : quickStrategy === 'behavior_tracking' ? (
                     <Space direction="vertical" size={12} className="full-width">
                       <Descriptions
                         column={1}
@@ -1085,6 +1279,121 @@ function createQuickTaskDefaults(featureHandoff: FeatureHandoff | null, availabl
       : [],
     timeColumn: featureHandoff?.recommended_time_columns.find((column) => availableColumns.includes(column)),
     groupColumns: (featureHandoff?.recommended_target_columns ?? []).filter((column) => availableColumns.includes(column)).slice(0, 2),
+  }
+}
+
+function buildFeatureRecipes({
+  handoff,
+  quickStrategy,
+  selectedTaskCategory,
+  behaviorTrackingSummary,
+  behaviorTrackingSteps,
+  quickTaskPreview,
+  quickTaskSteps,
+  recommendedTrainingColumns,
+  analysisRetainedColumns,
+}: {
+  handoff: FeatureHandoff | null
+  quickStrategy: FeatureFormValues['quickStrategy'] | undefined
+  selectedTaskCategory: FeatureTaskCategory | null
+  behaviorTrackingSummary: ReturnType<typeof describeBehaviorTrackingPlan>
+  behaviorTrackingSteps: FeatureStepDraft[]
+  quickTaskPreview: ReturnType<typeof describeQuickTaskPlan>
+  quickTaskSteps: FeatureStepDraft[]
+  recommendedTrainingColumns: string[]
+  analysisRetainedColumns: string[]
+}): FeatureRecipe[] {
+  if (quickStrategy === 'template') {
+    return []
+  }
+
+  if (quickStrategy === 'behavior_tracking') {
+    const trackingLabel = handoff?.tracking_type === 'entity' ? '主体追踪' : '流程追踪'
+    return [
+      {
+        id: handoff?.recipe_ids[0] ?? `behavior_tracking_${handoff?.tracking_type ?? 'flow'}`,
+        task_category: 'behavior_tracking',
+        title: `${trackingLabel}推荐方案`,
+        description: behaviorTrackingSummary.description,
+        generated_feature_descriptions: behaviorTrackingSummary.generatedColumns,
+        recommended_steps: behaviorTrackingSteps.map(toPersistedFromDraftStep),
+        training_candidate_descriptions: recommendedTrainingColumns.length
+          ? recommendedTrainingColumns.map((column) => `${column}：用于训练的行为统计/窗口/顺序特征`)
+          : ['当前方案将优先生成行为追踪数值特征，再进入训练。'],
+        analysis_retained_descriptions: analysisRetainedColumns.length
+          ? analysisRetainedColumns.map((column) => `${column}：保留作上下文、溯源和解释`)
+          : ['原始追踪键与上下文字段保留作分析，不直接混入训练。'],
+      },
+    ]
+  }
+
+  const taskCategory = selectedTaskCategory?.id ?? 'text_complexity'
+  const taskTitle = selectedTaskCategory?.title ?? '推荐方案'
+  return [
+    {
+      id: handoff?.recipe_ids[0] ?? `${taskCategory}_recipe`,
+      task_category: taskCategory,
+      title: `${taskTitle}推荐方案`,
+      description: quickTaskPreview.description,
+      generated_feature_descriptions: quickTaskPreview.generatedColumns,
+      recommended_steps: quickTaskSteps.map(toPersistedFromDraftStep),
+      training_candidate_descriptions: recommendedTrainingColumns.length
+        ? recommendedTrainingColumns.map((column) => `${column}：默认进入训练的派生特征`)
+        : ['当前方案会把新生成的统计特征优先作为训练候选。'],
+      analysis_retained_descriptions: analysisRetainedColumns.length
+        ? analysisRetainedColumns.map((column) => `${column}：保留作分析和解释，不默认进入训练`)
+        : ['原始字段继续保留在输出里，便于异常解释和追踪。'],
+    },
+  ]
+}
+
+function toPersistedFromDraftStep(step: FeatureStepDraft): FeatureStep {
+  const normalizedParams: Record<string, unknown> = {}
+  const selectorMode = step.input_selector?.mode ?? 'explicit'
+
+  if (step.params.prefix) normalizedParams.prefix = step.params.prefix
+  if (step.params.keywordsText?.trim()) {
+    normalizedParams.keywords = step.params.keywordsText.split(',').map((item) => item.trim()).filter(Boolean)
+  }
+  if (step.params.bins) normalizedParams.bins = Number(step.params.bins)
+  if (step.params.method) normalizedParams.method = step.params.method
+  if (step.params.separator?.trim()) normalizedParams.separator = step.params.separator.trim()
+  if (step.params.targetColumn?.trim()) normalizedParams.target_column = step.params.targetColumn.trim()
+  if (step.params.timeColumn?.trim()) normalizedParams.time_column = step.params.timeColumn.trim()
+  if (step.params.windowMinutes) normalizedParams.window_minutes = Number(step.params.windowMinutes)
+  if (step.params.threshold) normalizedParams.threshold = Number(step.params.threshold)
+  if (step.params.mappingText?.trim()) {
+    try {
+      normalizedParams.mapping = JSON.parse(step.params.mappingText)
+    } catch {
+      normalizedParams.mapping = {}
+    }
+  }
+  if (step.params.defaultValue !== undefined && step.params.defaultValue !== '') {
+    normalizedParams.default_value = step.params.defaultValue
+  }
+  if (step.params.operator) normalizedParams.operator = step.params.operator
+  if (step.params.value !== undefined && step.params.value !== '') normalizedParams.value = step.params.value
+  if (step.params.regexPattern?.trim()) normalizedParams.pattern = step.params.regexPattern.trim()
+  if (step.params.patternFlags?.length) normalizedParams.patterns = step.params.patternFlags
+
+  return {
+    step_id: step.step_id,
+    step_type: step.step_type,
+    enabled: step.enabled,
+    input_selector: {
+      mode: selectorMode,
+      columns: selectorMode === 'explicit' ? step.input_selector.columns : [],
+      dtype: selectorMode === 'dtype' ? step.input_selector.dtype : undefined,
+      role_tag: selectorMode === 'role_tag' ? step.input_selector.role_tag : undefined,
+      name_pattern: selectorMode === 'name_pattern' ? step.input_selector.name_pattern : undefined,
+    },
+    params: normalizedParams,
+    output_mode: {
+      mode: step.output_mode.mode,
+      output_column: step.output_mode.output_column,
+      suffix: step.output_mode.suffix,
+    },
   }
 }
 

@@ -255,6 +255,12 @@
   gap: 16px;
 }
 
+.recipe-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
 .issue-bucket-card.ant-card,
 .issue-group-card.ant-card,
 .task-category-card.ant-card {
@@ -463,7 +469,8 @@
   .issue-bucket-grid,
   .advisor-issue-grid,
   .task-category-grid,
-  .action-card-grid {
+  .action-card-grid,
+  .recipe-card-grid {
     grid-template-columns: 1fr;
   }
 

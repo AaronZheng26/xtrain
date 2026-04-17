@@ -237,6 +237,8 @@ export type FeatureHandoff = {
   recommended_target_columns: string[]
   recipe_ids: string[]
   reason_code?: string
+  source_issue_group_title?: string
+  source_reason_text?: string
 }
 
 export type RecommendedPreprocessStepDraft = {
@@ -364,6 +366,8 @@ export type FeatureRecipe = {
   description: string
   generated_feature_descriptions: string[]
   recommended_steps: FeatureStep[]
+  training_candidate_descriptions: string[]
+  analysis_retained_descriptions: string[]
 }
 
 export type FeatureStepPreviewRead = {

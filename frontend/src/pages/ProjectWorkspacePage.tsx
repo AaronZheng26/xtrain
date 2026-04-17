@@ -607,7 +607,8 @@ export function ProjectWorkspacePage() {
       : handoff.task_category === 'high_cardinality'
         ? '高基数特征'
         : '行为追踪特征'
-    messageApi.success(`已带入${label}推荐方案，可在特征页确认或微调。`)
+    const sourceLabel = handoff.source_issue_group_title ? `来自「${handoff.source_issue_group_title}」的` : ''
+    messageApi.success(`已带入${sourceLabel}${label}推荐方案，可在特征页确认后生成草稿。`)
   }, [handleTabChange, messageApi])
 
   useEffect(() => {

@@ -392,7 +392,12 @@ export function PreprocessTab(props: Props) {
                                   <Text type="secondary">{record.reason_text}</Text>
                                   <Space wrap>
                                     {record.feature_handoff ? (
-                                      <Button size="small" onClick={() => props.onFeatureHandoff(record.feature_handoff!)}>
+                                      <Button
+                                        size="small"
+                                        onClick={() => props.onFeatureHandoff(
+                                          buildFeatureHandoff(record, activeIssueGroup),
+                                        )}
+                                      >
                                         {getFeatureHandoffLabel(record.feature_handoff)}
                                       </Button>
                                     ) : null}
@@ -1193,6 +1198,14 @@ function getFeatureHandoffLabel(handoff: FeatureHandoff) {
   if (handoff.task_category === 'high_cardinality') return '改走高基数特征'
   if (handoff.task_category === 'behavior_tracking') return '改走行为追踪特征'
   return '带入推荐特征方案'
+}
+
+function buildFeatureHandoff(record: FieldAdvice, issueGroup: PreprocessFieldIssueGroup | null): FeatureHandoff {
+  return {
+    ...(record.feature_handoff as FeatureHandoff),
+    source_issue_group_title: issueGroup?.title,
+    source_reason_text: record.reason_text,
+  }
 }
 
 function buildRecommendationCards(
