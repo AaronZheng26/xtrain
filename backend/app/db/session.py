@@ -53,6 +53,12 @@ def _ensure_feature_pipeline_columns() -> None:
             connection.execute(text(statement))
 
 
+# Some call paths (for example direct TestClient usage without lifespan startup)
+# hit the ORM before initialize_database() runs. Patch legacy SQLite schemas early
+# so feature pipeline queries do not fail on missing metadata columns.
+_ensure_feature_pipeline_columns()
+
+
 def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
     try:
