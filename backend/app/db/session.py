@@ -42,8 +42,12 @@ def _ensure_feature_pipeline_columns() -> None:
     alter_statements: list[str] = []
     if "training_candidate_columns" not in existing_columns:
         alter_statements.append("ALTER TABLE feature_pipelines ADD COLUMN training_candidate_columns JSON NOT NULL DEFAULT '[]'")
+    if "business_context_columns" not in existing_columns:
+        alter_statements.append("ALTER TABLE feature_pipelines ADD COLUMN business_context_columns JSON NOT NULL DEFAULT '[]'")
     if "analysis_retained_columns" not in existing_columns:
         alter_statements.append("ALTER TABLE feature_pipelines ADD COLUMN analysis_retained_columns JSON NOT NULL DEFAULT '[]'")
+    if "feature_lineage" not in existing_columns:
+        alter_statements.append("ALTER TABLE feature_pipelines ADD COLUMN feature_lineage JSON NOT NULL DEFAULT '{}'")
 
     if not alter_statements:
         return

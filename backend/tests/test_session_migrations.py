@@ -53,7 +53,9 @@ class SessionMigrationTests(unittest.TestCase):
                 temp_engine.dispose()
 
         self.assertIn("training_candidate_columns", existing_columns)
+        self.assertIn("business_context_columns", existing_columns)
         self.assertIn("analysis_retained_columns", existing_columns)
+        self.assertIn("feature_lineage", existing_columns)
 
 
 if __name__ == "__main__":

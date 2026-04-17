@@ -66,6 +66,19 @@ export function AnalysisTab(props: Props) {
   const provider = Form.useWatch('provider', configForm) ?? 'ollama'
   const selectedSignalColumn = selectedSignal?.modelId === props.selectedModelId ? selectedSignal.column : null
   const selectedSignalType = selectedSignal?.modelId === props.selectedModelId ? selectedSignal.type : null
+  const reportJson = props.selectedModel?.report_json ?? {}
+  const businessContextColumns = props.preview?.business_context_columns?.length
+    ? props.preview.business_context_columns
+    : Array.isArray(reportJson.business_context_columns)
+      ? (reportJson.business_context_columns as string[])
+      : []
+  const predictionDisplayColumns = props.preview?.prediction_display_columns?.length
+    ? props.preview.prediction_display_columns
+    : props.preview?.columns ?? []
+  const featureLineageSnapshot = props.preview?.feature_lineage_snapshot
+    ?? (reportJson.feature_lineage_snapshot as Record<string, { source_columns?: string[]; task_category?: string; recipe_id?: string; business_meaning?: string }> | undefined)
+    ?? {}
+  const selectedSignalLineage = selectedSignalColumn ? featureLineageSnapshot[selectedSignalColumn] : null
 
   const signalSampleRows = useMemo<SignalSampleRow[]>(() => {
     if (!selectedSignalColumn || !props.preview?.rows?.length || !props.preview.columns.includes(selectedSignalColumn)) {
@@ -92,13 +105,13 @@ export function AnalysisTab(props: Props) {
 
   const selectedSignalSampleContext = useMemo(() => {
     if (!selectedSignalSample || !selectedSignalColumn) return []
-    return buildSignalSampleContext(selectedSignalSample, selectedSignalColumn)
-  }, [selectedSignalSample, selectedSignalColumn])
+    return buildSignalSampleContext(selectedSignalSample, selectedSignalColumn, businessContextColumns)
+  }, [businessContextColumns, selectedSignalSample, selectedSignalColumn])
 
   const selectedSignalSampleMatches = useMemo(() => {
     if (!selectedSignalSample || !props.preview?.rows?.length) return []
-    return buildSignalSampleMatches(props.preview.rows, selectedSignalSample)
-  }, [props.preview, selectedSignalSample])
+    return buildSignalSampleMatches(props.preview.rows, selectedSignalSample, businessContextColumns)
+  }, [businessContextColumns, props.preview, selectedSignalSample])
 
   const signalWindowDetail = useMemo(() => {
     if (!selectedSignalSample || !props.preview?.rows?.length || !selectedSignalColumn) {
@@ -359,7 +372,7 @@ export function AnalysisTab(props: Props) {
                               />
                               <Table<Record<string, unknown>>
                                 rowKey={(record) => String(record.__rowKey)}
-                                columns={buildPreviewColumns(props.preview?.columns ?? [])}
+                                columns={buildPreviewColumns(predictionDisplayColumns)}
                                 dataSource={signalSampleRows}
                                 pagination={{ pageSize: 5, hideOnSinglePage: true }}
                                 scroll={{ x: 1000 }}
@@ -418,6 +431,22 @@ export function AnalysisTab(props: Props) {
                               </div>
                             ) : (
                               <Text type="secondary">当前预览里暂时没有更多可用于对比的相同字段值。</Text>
+                            )}
+                          </Card>
+                          <Card size="small" title="特征来源解释">
+                            {selectedSignalLineage ? (
+                              <Space direction="vertical" size={8} className="full-width">
+                                <Text>{selectedSignalLineage.business_meaning ?? '当前特征用于描述异常行为的派生信号。'}</Text>
+                                <div className="tag-wall">
+                                  {(selectedSignalLineage.source_columns ?? []).map((column) => (
+                                    <Tag color="blue" key={`lineage-source-${column}`}>{column}</Tag>
+                                  ))}
+                                  {selectedSignalLineage.task_category ? <Tag color="purple">{selectedSignalLineage.task_category}</Tag> : null}
+                                  {selectedSignalLineage.recipe_id ? <Tag color="geekblue">{selectedSignalLineage.recipe_id}</Tag> : null}
+                                </div>
+                              </Space>
+                            ) : (
+                              <Text type="secondary">当前还没有该特征的 lineage 快照，通常是旧模型或旧特征流水线生成的结果。</Text>
                             )}
                           </Card>
                         </Space>
@@ -523,7 +552,7 @@ export function AnalysisTab(props: Props) {
               <Table<Record<string, unknown>>
                 rowKey={(_, index) => String(index)}
                 loading={props.previewLoading}
-                columns={buildPreviewColumns(props.preview?.columns ?? [])}
+                columns={buildPreviewColumns(predictionDisplayColumns)}
                 dataSource={props.preview?.rows ?? []}
                 pagination={{ pageSize: 5, hideOnSinglePage: true }}
                 scroll={{ x: 1000 }}
@@ -569,20 +598,22 @@ function buildSignalSampleKey(row: Record<string, unknown>, index: number) {
   return `preview-${index}`
 }
 
-function buildSignalSampleContext(row: Record<string, unknown>, signalColumn: string) {
-  const preferredColumns = [
-    'event_time',
-    'source_ip',
-    'dest_ip',
-    'host',
-    'source_host',
-    'dest_host',
-    'process_name',
-    'protocol',
-    'method',
-    'path',
-    'status_code',
-  ]
+function buildSignalSampleContext(row: Record<string, unknown>, signalColumn: string, businessContextColumns: string[]) {
+  const preferredColumns = businessContextColumns.length
+    ? businessContextColumns
+    : [
+        'event_time',
+        'source_ip',
+        'dest_ip',
+        'host',
+        'source_host',
+        'dest_host',
+        'process_name',
+        'protocol',
+        'method',
+        'path',
+        'status_code',
+      ]
   const signalBase = inferSignalBase(signalColumn)
   const preferredSet = new Set(preferredColumns)
   const entries: Array<{ label: string; value: string }> = []
@@ -606,8 +637,10 @@ function buildSignalSampleContext(row: Record<string, unknown>, signalColumn: st
   return entries.slice(0, 8)
 }
 
-function buildSignalSampleMatches(rows: Record<string, unknown>[], selectedRow: Record<string, unknown>) {
-  const comparableColumns = ['source_ip', 'dest_ip', 'host', 'process_name', 'protocol', 'method', 'path', 'status_code']
+function buildSignalSampleMatches(rows: Record<string, unknown>[], selectedRow: Record<string, unknown>, businessContextColumns: string[]) {
+  const comparableColumns = businessContextColumns.length
+    ? businessContextColumns
+    : ['source_ip', 'dest_ip', 'host', 'process_name', 'protocol', 'method', 'path', 'status_code']
   const summaries: Array<{ label: string; count: number }> = []
 
   for (const column of comparableColumns) {

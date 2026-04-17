@@ -36,7 +36,9 @@ class FeaturePipelineRead(BaseModel):
     output_row_count: int
     output_schema: list[dict]
     training_candidate_columns: list[str] = Field(default_factory=list)
+    business_context_columns: list[str] = Field(default_factory=list)
     analysis_retained_columns: list[str] = Field(default_factory=list)
+    feature_lineage: dict[str, dict[str, Any]] = Field(default_factory=dict)
     created_at: datetime
     updated_at: datetime
 
@@ -48,7 +50,9 @@ class FeaturePreviewRead(BaseModel):
     columns: list[str]
     rows: list[dict]
     training_candidate_columns: list[str] = Field(default_factory=list)
+    business_context_columns: list[str] = Field(default_factory=list)
     analysis_retained_columns: list[str] = Field(default_factory=list)
+    feature_lineage: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class FeatureTemplateRead(BaseModel):

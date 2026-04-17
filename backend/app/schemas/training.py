@@ -49,6 +49,9 @@ class ModelPreviewRead(BaseModel):
     metrics: dict
     columns: list[str]
     rows: list[dict]
+    business_context_columns: list[str] = Field(default_factory=list)
+    prediction_display_columns: list[str] = Field(default_factory=list)
+    feature_lineage_snapshot: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class ModelAnalysisScorePointRead(BaseModel):

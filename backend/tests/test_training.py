@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.schemas.training import TrainingRequest
 from app.services.training import (
+    _build_prediction_output_frame,
     _build_signal_summaries,
     _calculate_stratified_sample_targets,
     _sample_unsupervised_frame,
@@ -130,7 +131,19 @@ class TrainingFeatureSelectionTests(unittest.TestCase):
             steps=[],
             output_schema=[{"name": column} for column in frame.columns],
             training_candidate_columns=["raw_message_entropy", "source_ip_15m_count"],
+            business_context_columns=["raw_message", "session_id"],
             analysis_retained_columns=["raw_message", "session_id"],
+            feature_lineage={
+                "source_ip_15m_count": {
+                    "source_columns": ["session_id"],
+                    "step_type": "time_window_count",
+                    "task_category": "behavior_tracking",
+                    "recipe_id": "behavior_tracking_window",
+                    "description": "time_window_count 基于 session_id 生成",
+                    "business_meaning": "会话时间窗事件数",
+                    "used_for_training": True,
+                }
+            },
         )
         payload = TrainingRequest(
             project_id=1,
@@ -153,6 +166,8 @@ class TrainingFeatureSelectionTests(unittest.TestCase):
 
         self.assertEqual(result["selection_source"], "feature_pipeline_candidates")
         self.assertEqual(result["used_feature_columns"], ["raw_message_entropy", "source_ip_15m_count"])
+        self.assertEqual(result["business_context_columns"], ["raw_message", "session_id"])
+        self.assertIn("source_ip_15m_count", result["feature_lineage_snapshot"])
         self.assertEqual(result["exclusion_reasons"]["raw_message"], "not_in_training_candidates")
         self.assertEqual(result["exclusion_reasons"]["session_id"], "not_in_training_candidates")
 
@@ -196,6 +211,38 @@ class TrainingFeatureSelectionTests(unittest.TestCase):
         self.assertEqual(result["used_feature_columns"], ["raw_message_entropy", "source_ip_15m_spike"])
         self.assertEqual(result["exclusion_reasons"]["raw_message"], "not_in_training_candidates")
         self.assertEqual(result["exclusion_reasons"]["session_id"], "not_in_training_candidates")
+        self.assertEqual(result["business_context_columns"], ["raw_message", "session_id"])
+
+    def test_prediction_output_frame_keeps_business_context_columns(self):
+        frame = pd.DataFrame(
+            {
+                "event_time": ["2026-04-01 00:00:00", "2026-04-01 00:01:00"],
+                "session_id": ["session-a", "session-b"],
+                "raw_message": ["timeout on db", "login failed"],
+                "raw_message_entropy": [3.1, 3.4],
+                "source_ip_15m_count": [4, 8],
+            }
+        )
+
+        result_frame = _build_prediction_output_frame(
+            base_frame=frame,
+            row_index=frame.index,
+            feature_columns=["raw_message_entropy", "source_ip_15m_count"],
+            business_context_columns=["event_time", "session_id", "raw_message"],
+        )
+
+        self.assertEqual(
+            list(result_frame.columns),
+            [
+                "event_time",
+                "session_id",
+                "raw_message",
+                "raw_message_entropy",
+                "source_ip_15m_count",
+                "source_row_id",
+                "sample_index",
+            ],
+        )
 
     def test_signal_summaries_highlight_spike_and_count_features(self):
         frame = pd.DataFrame(

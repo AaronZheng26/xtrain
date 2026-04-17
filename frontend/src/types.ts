@@ -303,6 +303,16 @@ export type FeatureStep = {
   }
 }
 
+export type FeatureLineageEntry = {
+  source_columns: string[]
+  step_type: string
+  task_category: string
+  recipe_id: string
+  description: string
+  business_meaning: string
+  used_for_training: boolean
+}
+
 export type FeaturePipeline = {
   id: number
   project_id: number
@@ -315,7 +325,9 @@ export type FeaturePipeline = {
   output_row_count: number
   output_schema: SchemaField[]
   training_candidate_columns: string[]
+  business_context_columns: string[]
   analysis_retained_columns: string[]
+  feature_lineage: Record<string, FeatureLineageEntry>
   created_at: string
   updated_at: string
 }
@@ -325,7 +337,9 @@ export type FeaturePreviewRead = {
   columns: string[]
   rows: Record<string, unknown>[]
   training_candidate_columns: string[]
+  business_context_columns: string[]
   analysis_retained_columns: string[]
+  feature_lineage: Record<string, FeatureLineageEntry>
 }
 
 export type FeatureTemplate = {
@@ -413,6 +427,9 @@ export type ModelPreviewRead = {
   metrics: Record<string, unknown>
   columns: string[]
   rows: Record<string, unknown>[]
+  business_context_columns: string[]
+  prediction_display_columns: string[]
+  feature_lineage_snapshot: Record<string, FeatureLineageEntry>
 }
 
 export type ModelAnalysisScorePoint = {

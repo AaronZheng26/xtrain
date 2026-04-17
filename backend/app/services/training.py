@@ -195,11 +195,21 @@ def preview_model_version(model_version: ModelVersion, limit: int = 20) -> dict[
     if sort_column:
         frame = frame.sort_values(by=sort_column, ascending=False)
     frame = frame.head(min(max(limit, 1), 50))
+    report_json = model_version.report_json or {}
+    prediction_display_columns = [
+        column
+        for column in report_json.get("prediction_display_columns", [])
+        if column in frame.columns
+    ]
+    ordered_columns = prediction_display_columns + [column for column in frame.columns if column not in prediction_display_columns]
     return {
         "model_id": model_version.id,
         "metrics": model_version.metrics,
-        "columns": list(frame.columns),
-        "rows": json_safe_records(frame),
+        "columns": ordered_columns,
+        "rows": json_safe_records(frame.loc[:, ordered_columns]),
+        "business_context_columns": [column for column in report_json.get("business_context_columns", []) if column in frame.columns],
+        "prediction_display_columns": ordered_columns,
+        "feature_lineage_snapshot": report_json.get("feature_lineage_snapshot", {}),
     }
 
 
@@ -347,7 +357,12 @@ def _train_model(
             "train_rows": int(len(X_train)),
             "test_rows": int(len(X_test)),
         }
-        result_frame = train_frame.loc[X_test.index, feature_columns].copy()
+        result_frame = _build_prediction_output_frame(
+            base_frame=train_frame,
+            row_index=X_test.index,
+            feature_columns=feature_columns,
+            business_context_columns=feature_selection["business_context_columns"],
+        )
         result_frame["actual_label"] = y_test.values
         result_frame["predicted_label"] = predictions
         if probability is not None:
@@ -361,6 +376,11 @@ def _train_model(
             "report_json": {
                 "classes": sorted(y.astype(str).unique().tolist()),
                 **feature_selection,
+                "prediction_display_columns": _build_prediction_display_columns(
+                    feature_selection["business_context_columns"],
+                    feature_columns,
+                    result_frame.columns,
+                ),
             },
             "prediction_frame": result_frame.reset_index(drop=True),
         }
@@ -384,7 +404,12 @@ def _train_model(
         **feature_selection,
     }
 
-    result_frame = prediction_base.loc[X.index, feature_columns].copy()
+    result_frame = _build_prediction_output_frame(
+        base_frame=prediction_base,
+        row_index=X.index,
+        feature_columns=feature_columns,
+        business_context_columns=feature_selection["business_context_columns"],
+    )
     result_frame["predicted_label"] = np.where(labels == 1, "anomaly", "normal")
     result_frame["anomaly_score"] = scores
 
@@ -404,7 +429,14 @@ def _train_model(
         "target_column": target_column if target_column in prediction_base.columns else None,
         "feature_columns": feature_columns,
         "metrics": metrics,
-        "report_json": report_json,
+        "report_json": {
+            **report_json,
+            "prediction_display_columns": _build_prediction_display_columns(
+                feature_selection["business_context_columns"],
+                feature_columns,
+                result_frame.columns,
+            ),
+        },
         "prediction_frame": result_frame.reset_index(drop=True),
     }
 
@@ -451,7 +483,7 @@ def _select_training_feature_columns(
             selection_source = "feature_pipeline_candidates"
             default_exclusion_reasons = {
                 column: "not_in_training_candidates"
-                for column in feature_metadata["analysis_retained_columns"]
+                for column in feature_metadata["analysis_retained_columns"] + feature_metadata["business_context_columns"]
                 if column in available_columns
             }
 
@@ -490,6 +522,8 @@ def _select_training_feature_columns(
         "excluded_feature_columns": excluded_feature_columns,
         "exclusion_reasons": exclusion_reasons,
         "max_categorical_cardinality": max_categorical_cardinality,
+        "business_context_columns": feature_metadata["business_context_columns"] if feature_pipeline else [],
+        "feature_lineage_snapshot": feature_metadata["feature_lineage"] if feature_pipeline else {},
     }
 
 
@@ -513,15 +547,23 @@ def _resolve_feature_pipeline_selection_metadata(
     *,
     preprocess_pipeline: PreprocessPipeline | None,
     dataset_schema_columns: list[str] | None = None,
-) -> dict[str, list[str]]:
+) -> dict[str, Any]:
     stored_training_candidates = [column for column in (feature_pipeline.training_candidate_columns or []) if column in frame.columns]
+    stored_business_context_columns = [column for column in (feature_pipeline.business_context_columns or []) if column in frame.columns]
     stored_analysis_columns = [column for column in (feature_pipeline.analysis_retained_columns or []) if column in frame.columns]
-    if stored_training_candidates or stored_analysis_columns:
-        accounted = set(stored_training_candidates) | set(stored_analysis_columns)
+    stored_feature_lineage = {
+        column: value
+        for column, value in (feature_pipeline.feature_lineage or {}).items()
+        if column in frame.columns and isinstance(value, dict)
+    }
+    if stored_training_candidates or stored_business_context_columns or stored_analysis_columns:
+        accounted = set(stored_training_candidates) | set(stored_business_context_columns) | set(stored_analysis_columns)
         remaining = [column for column in frame.columns if column not in accounted]
         return {
             "training_candidate_columns": stored_training_candidates,
+            "business_context_columns": stored_business_context_columns,
             "analysis_retained_columns": stored_analysis_columns + remaining,
+            "feature_lineage": stored_feature_lineage,
         }
 
     upstream_columns = _resolve_feature_pipeline_input_columns(
@@ -529,6 +571,7 @@ def _resolve_feature_pipeline_selection_metadata(
         dataset_schema_columns=dataset_schema_columns,
     )
     training_candidate_columns: list[str] = []
+    business_context_columns: list[str] = []
     analysis_retained_columns: list[str] = []
 
     for column in frame.columns:
@@ -536,12 +579,16 @@ def _resolve_feature_pipeline_selection_metadata(
         is_generated = column not in upstream_columns
         if is_generated and pd.api.types.is_numeric_dtype(series):
             training_candidate_columns.append(column)
+        elif _is_business_context_candidate(column, series, upstream_columns):
+            business_context_columns.append(column)
         else:
             analysis_retained_columns.append(column)
 
     return {
         "training_candidate_columns": training_candidate_columns,
+        "business_context_columns": business_context_columns,
         "analysis_retained_columns": analysis_retained_columns,
+        "feature_lineage": {},
     }
 
 
@@ -553,6 +600,80 @@ def _resolve_feature_pipeline_input_columns(
     if preprocess_pipeline and preprocess_pipeline.output_schema:
         return [field.get("name") for field in preprocess_pipeline.output_schema if field.get("name")]
     return list(dataset_schema_columns or [])
+
+
+def _build_prediction_output_frame(
+    *,
+    base_frame: pd.DataFrame,
+    row_index: pd.Index,
+    feature_columns: list[str],
+    business_context_columns: list[str],
+) -> pd.DataFrame:
+    selection_columns: list[str] = []
+    for column in business_context_columns + feature_columns:
+        if column in base_frame.columns and column not in selection_columns:
+            selection_columns.append(column)
+
+    result_frame = base_frame.loc[row_index, selection_columns].copy()
+    if "source_row_id" not in result_frame.columns:
+        result_frame["source_row_id"] = [str(index) for index in row_index]
+    result_frame["sample_index"] = np.arange(len(result_frame))
+    return result_frame
+
+
+def _build_prediction_display_columns(
+    business_context_columns: list[str],
+    feature_columns: list[str],
+    available_columns: pd.Index | list[str],
+) -> list[str]:
+    available = list(available_columns)
+    ordered: list[str] = []
+    for column in ["sample_index", "source_row_id", *business_context_columns, "actual_label", "predicted_label", "anomaly_score", "prediction_proba", *feature_columns]:
+        if column in available and column not in ordered:
+            ordered.append(column)
+    ordered.extend(column for column in available if column not in ordered)
+    return ordered
+
+
+def _is_business_context_candidate(column: str, series: pd.Series, upstream_columns: list[str]) -> bool:
+    normalized = _normalize_column_name(column)
+    if normalized in {"sampleindex", "sourcerowid", "recordid"}:
+        return True
+    if column not in upstream_columns:
+        return False
+    if any(hint in normalized for hint in RAW_TEXT_HINTS):
+        return True
+    if any(
+        hint in normalized
+        for hint in (
+            "eventtime",
+            "timestamp",
+            "time",
+            "sourceip",
+            "destip",
+            "srcip",
+            "dstip",
+            "host",
+            "path",
+            "url",
+            "uri",
+            "method",
+            "status",
+            "session",
+            "request",
+            "trace",
+            "user",
+            "account",
+            "device",
+            "process",
+            "mailfrom",
+            "rcptto",
+            "helo",
+            "domain",
+        )
+    ):
+        return True
+    return pd.api.types.is_datetime64_any_dtype(series) or pd.api.types.is_string_dtype(series)
 
 
 def _select_feature_output_columns(

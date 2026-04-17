@@ -388,7 +388,9 @@ export function FeatureTab(props: Props) {
     [quickStrategy, quickTaskConfig, quickTaskSteps],
   )
   const previewTrainingCandidateColumns = props.preview?.training_candidate_columns ?? []
+  const previewBusinessContextColumns = props.preview?.business_context_columns ?? []
   const previewAnalysisRetainedColumns = props.preview?.analysis_retained_columns ?? []
+  const previewFeatureLineage = props.preview?.feature_lineage ?? props.selectedPipeline?.feature_lineage ?? {}
   const recommendedTrainingColumns = useMemo(() => {
     if (previewTrainingCandidateColumns.length) return previewTrainingCandidateColumns
     if (props.selectedPipeline?.training_candidate_columns.length) return props.selectedPipeline.training_candidate_columns
@@ -425,6 +427,24 @@ export function FeatureTab(props: Props) {
     props.selectedPipeline,
     quickStrategy,
     quickTaskConfig,
+  ])
+  const businessContextColumns = useMemo(() => {
+    if (previewBusinessContextColumns.length) return previewBusinessContextColumns
+    if (props.selectedPipeline?.business_context_columns.length) return props.selectedPipeline.business_context_columns
+    if (mode === 'quick' && quickStrategy === 'behavior_tracking') {
+      return [
+        behaviorTracking?.groupKey,
+        behaviorTracking?.timeColumn,
+        ...(behaviorTracking?.targetColumns ?? []),
+      ].filter((column): column is string => Boolean(column))
+    }
+    return []
+  }, [
+    behaviorTracking,
+    mode,
+    previewBusinessContextColumns,
+    props.selectedPipeline,
+    quickStrategy,
   ])
   const featureRecipes = useMemo(
     () => buildFeatureRecipes({
@@ -1207,7 +1227,19 @@ export function FeatureTab(props: Props) {
                     </div>
                   </div>
                   <div>
-                    <Text strong>仅保留作分析</Text>
+                    <Text strong>保留作业务分析</Text>
+                    <div className="tag-wall">
+                      {businessContextColumns.length ? (
+                        businessContextColumns.map((column) => (
+                          <Tag color="blue" key={`context-${column}`}>{column}</Tag>
+                        ))
+                      ) : (
+                        <Text type="secondary">当前还没有显式标记业务上下文字段。系统会优先保留时间、主体、目标、状态和原始消息等上下文字段。</Text>
+                      )}
+                    </div>
+                  </div>
+                  <div>
+                    <Text strong>仅保留作技术分析</Text>
                     <div className="tag-wall">
                       {analysisRetainedColumns.length ? (
                         analysisRetainedColumns.map((column) => (
@@ -1218,11 +1250,41 @@ export function FeatureTab(props: Props) {
                       )}
                     </div>
                   </div>
+                  <div>
+                    <Text strong>特征来源说明</Text>
+                    <Space direction="vertical" size={8} className="full-width top-gap-sm">
+                      {recommendedTrainingColumns.length ? (
+                        recommendedTrainingColumns.slice(0, 8).map((column) => {
+                          const lineage = previewFeatureLineage[column]
+                          return (
+                            <Card size="small" key={`lineage-${column}`}>
+                              <Space direction="vertical" size={4} className="full-width">
+                                <Text strong>{column}</Text>
+                                <Text type="secondary">
+                                  {lineage?.business_meaning ?? '当前还没有精确的 lineage 说明，默认视为用于训练的派生特征。'}
+                                </Text>
+                                {lineage?.source_columns?.length ? (
+                                  <div className="tag-wall">
+                                    {lineage.source_columns.map((source) => (
+                                      <Tag key={`${column}-${source}`}>{source}</Tag>
+                                    ))}
+                                    <Tag color="purple">{lineage.task_category}</Tag>
+                                  </div>
+                                ) : null}
+                              </Space>
+                            </Card>
+                          )
+                        })
+                      ) : (
+                        <Text type="secondary">运行后，这里会说明每个推荐训练特征来自哪些原始字段，以及它的业务含义。</Text>
+                      )}
+                    </Space>
+                  </div>
                   <Alert
                     type="info"
                     showIcon
                     message="特征页会先把训练候选和分析保留分开，再交给训练页确认。"
-                    description="默认情况下，新生成的统计/布尔/行为特征会优先进入训练；原始 ID、原始文本和上下文字段继续保留在输出里，但不会默认混入训练。"
+                    description="默认情况下，新生成的统计/布尔/行为特征会优先进入训练；原始 ID、原始文本和业务上下文字段继续保留在输出和预测结果里，但不会默认混入训练。"
                   />
                 </Space>
               </Card>
