@@ -427,19 +427,20 @@ def _select_training_feature_columns(
     payload: TrainingRequest,
     dataset_label_column: str | None,
     target_column: str | None,
-    dataset_schema_columns: list[str],
-    preprocess_pipeline: PreprocessPipeline | None,
-    feature_pipeline: FeaturePipeline | None,
+    dataset_schema_columns: list[str] | None = None,
+    preprocess_pipeline: PreprocessPipeline | None = None,
+    feature_pipeline: FeaturePipeline | None = None,
 ) -> dict[str, Any]:
     available_columns = list(frame.columns)
     max_categorical_cardinality = max(int(payload.training_params.get("max_categorical_cardinality", DEFAULT_MAX_CATEGORICAL_CARDINALITY)), 5)
+    resolved_dataset_schema_columns = list(dataset_schema_columns or [])
 
     if feature_pipeline:
         feature_metadata = _resolve_feature_pipeline_selection_metadata(
             frame,
             feature_pipeline,
             preprocess_pipeline=preprocess_pipeline,
-            dataset_schema_columns=dataset_schema_columns,
+            dataset_schema_columns=resolved_dataset_schema_columns,
         )
         if payload.feature_columns:
             requested_feature_columns = [column for column in payload.feature_columns if column in available_columns]
@@ -511,7 +512,7 @@ def _resolve_feature_pipeline_selection_metadata(
     feature_pipeline: FeaturePipeline,
     *,
     preprocess_pipeline: PreprocessPipeline | None,
-    dataset_schema_columns: list[str],
+    dataset_schema_columns: list[str] | None = None,
 ) -> dict[str, list[str]]:
     stored_training_candidates = [column for column in (feature_pipeline.training_candidate_columns or []) if column in frame.columns]
     stored_analysis_columns = [column for column in (feature_pipeline.analysis_retained_columns or []) if column in frame.columns]
@@ -547,11 +548,11 @@ def _resolve_feature_pipeline_selection_metadata(
 def _resolve_feature_pipeline_input_columns(
     *,
     preprocess_pipeline: PreprocessPipeline | None,
-    dataset_schema_columns: list[str],
+    dataset_schema_columns: list[str] | None = None,
 ) -> list[str]:
     if preprocess_pipeline and preprocess_pipeline.output_schema:
         return [field.get("name") for field in preprocess_pipeline.output_schema if field.get("name")]
-    return list(dataset_schema_columns)
+    return list(dataset_schema_columns or [])
 
 
 def _select_feature_output_columns(

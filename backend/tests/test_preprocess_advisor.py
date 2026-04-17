@@ -6,10 +6,34 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.services.preprocess_advisor import _build_field_advice, _build_issue_groups, _build_recommended_steps
+from app.schemas.preprocess import PreprocessTrainingAdvisorRequest
+from app.services.preprocess_advisor import _build_field_advice, _build_issue_groups, _build_recommended_steps, _build_training_selection
 
 
 class PreprocessAdvisorTests(unittest.TestCase):
+    def test_build_training_selection_passes_dataset_schema_columns(self):
+        frame = pd.DataFrame(
+            {
+                "label": ["normal", "anomaly", "normal", "anomaly"],
+                "request_id": ["req-1", "req-2", "req-3", "req-4"],
+                "raw_message": ["timeout on db", "login failed", "all good", "panic stack"],
+                "metric_text": ["1.0", "2.5", "3.1", "4.9"],
+            }
+        )
+        payload = PreprocessTrainingAdvisorRequest(
+            project_id=1,
+            dataset_version_id=1,
+            steps=[],
+            sample_limit=200,
+            target_column="label",
+        )
+
+        selection = _build_training_selection(frame, payload, "label", "label")
+
+        self.assertIn("selection_source", selection)
+        self.assertIn("metric_text", selection["requested_feature_columns"])
+        self.assertNotIn("label", selection["used_feature_columns"])
+
     def test_field_advice_marks_training_risks_and_conversion_candidates(self):
         frame = pd.DataFrame(
             {

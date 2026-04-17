@@ -276,6 +276,7 @@ def _build_training_selection(
         training_payload,
         dataset_label_column=dataset_label_column,
         target_column=target_column,
+        dataset_schema_columns=list(frame.columns),
         preprocess_pipeline=None,
         feature_pipeline=None,
     )
