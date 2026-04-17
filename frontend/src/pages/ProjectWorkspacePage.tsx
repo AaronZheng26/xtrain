@@ -267,7 +267,6 @@ export function ProjectWorkspacePage() {
   const latestJob = jobs[0] ?? null
   const hasPendingWorkspaceJobs = pendingWorkspaceJobs.length > 0
   const datasetColumns = selectedDataset?.schema_snapshot.map((field) => field.name) ?? []
-  const featureColumns = selectedFeaturePipeline?.output_schema.map((field) => field.name) ?? selectedPipeline?.output_schema.map((field) => field.name) ?? datasetColumns
 
   const resetWorkspaceState = useCallback(() => {
     setDatasets([])
@@ -989,9 +988,15 @@ export function ProjectWorkspacePage() {
         sampledAdvisorRun?.result?.summary.suggested_training_columns
         ?? preprocessAdvisor?.summary.suggested_training_columns
         ?? []
+      const selectedTrainingFeaturePipeline =
+        values.featurePipelineId
+          ? featurePipelines.find((pipeline) => pipeline.id === values.featurePipelineId) ?? null
+          : null
       const requestedFeatureColumns = values.featureColumns?.length
         ? values.featureColumns
-        : !values.featurePipelineId && advisorSuggestedColumns.length
+        : selectedTrainingFeaturePipeline?.training_candidate_columns?.length
+          ? selectedTrainingFeaturePipeline.training_candidate_columns
+          : !values.featurePipelineId && advisorSuggestedColumns.length
           ? advisorSuggestedColumns
           : []
 
@@ -1011,9 +1016,13 @@ export function ProjectWorkspacePage() {
       setSelectedModelId(response.data.resource_id)
       setPendingWorkspaceJobs((current) => [...current, { jobId: response.data.job.id, kind: 'training', resourceId: response.data.resource_id, tab: 'training' }])
       handleTabChange('training')
-      messageApi.success(requestedFeatureColumns.length && !values.featureColumns?.length && !values.featurePipelineId
-        ? '训练任务已提交，已优先复用预处理阶段的训练影响建议。'
-        : '训练任务已提交，完成后会自动刷新结果。')
+      messageApi.success(
+        values.featurePipelineId && !values.featureColumns?.length
+          ? '训练任务已提交，默认会复用特征页推荐训练字段。'
+          : requestedFeatureColumns.length && !values.featureColumns?.length && !values.featurePipelineId
+            ? '训练任务已提交，已优先复用预处理阶段的训练影响建议。'
+            : '训练任务已提交，完成后会自动刷新结果。',
+      )
     } catch {
       setErrorMessage('执行训练失败，请检查标签列、训练字段或算法选择。')
     } finally {
@@ -1109,7 +1118,7 @@ export function ProjectWorkspacePage() {
             { key: 'data', label: stageLabels.data, children: <DataTab project={project} datasets={datasets} selectedDatasetId={selectedDatasetId} selectedDataset={selectedDataset} datasetPreview={datasetPreview} fileList={fileList} datasetsLoading={datasetsLoading} previewLoading={workspaceLoading} fieldMapping={fieldMapping} importSession={importSession} mappingLoading={workspaceLoading} savingMapping={savingMapping} creatingImportSession={creatingImportSession} applyingImportCleaning={applyingImportCleaning} confirmingImportSession={confirmingImportSession} deletingDatasetId={deletingDatasetId} mappingForm={mappingForm} onSelectDataset={setSelectedDatasetId} onFileListChange={setFileList} onCreateImportSession={() => void handleCreateImportSession()} onConfirmImportSession={() => void handleConfirmImportSession()} onSelectImportTemplate={(templateId) => void handleSelectImportTemplate(templateId)} onApplyImportCleaning={(options) => void handleApplyImportCleaning(options)} onSaveFieldMapping={() => void handleSaveFieldMapping()} onDeleteDataset={(datasetId) => void handleDeleteDataset(datasetId)} /> },
             { key: 'preprocess', label: stageLabels.preprocess, children: <PreprocessTab dataset={selectedDataset} columns={datasetColumns} pipelines={pipelines} selectedPipelineId={selectedPipelineId} selectedPipeline={selectedPipeline} preview={pipelinePreview} stepPreview={preprocessStepPreview} stepPreviewLoading={preprocessStepPreviewLoading} listLoading={workspaceLoading} previewLoading={pipelinePreviewLoading} running={runningPreprocess} advisor={preprocessAdvisor} advisorLoading={preprocessAdvisorLoading} sampledAdvisorRun={sampledAdvisorRun} sampledAdvisorLoading={sampledAdvisorLoading} onRun={(values) => void handleRunPreprocess(values)} onPreviewStep={(index, values) => void handlePreviewPreprocessStep(index, values)} onAnalyzeAdvisor={handleAnalyzePreprocessAdvisor} onRunSampledAdvisor={handleRunSampledPreprocessAdvisor} onFeatureHandoff={handleFeatureHandoff} onSelectPipeline={setSelectedPipelineId} /> },
             { key: 'feature', label: stageLabels.feature, children: <FeatureTab projectId={project?.id ?? null} dataset={selectedDataset} preprocessPipelines={pipelines} pipelines={featurePipelines} templates={featureTemplates} templatesLoading={featureTemplatesLoading} selectedPipelineId={selectedFeaturePipelineId} selectedPipeline={selectedFeaturePipeline} preview={featurePreview} stepPreview={featureStepPreview} listLoading={workspaceLoading} previewLoading={featurePreviewLoading} stepPreviewLoading={featureStepPreviewLoading} running={runningFeaturePipeline} savingTemplate={savingFeatureTemplate} featureHandoff={featureHandoff} onClearFeatureHandoff={() => setFeatureHandoff(null)} onRun={(values) => void handleRunFeaturePipeline(values)} onPreviewStep={(index, values) => void handlePreviewFeatureStep(index, values)} onSaveTemplate={(values) => void handleSaveFeatureTemplate(values)} onSelectPipeline={setSelectedFeaturePipelineId} /> },
-            { key: 'training', label: stageLabels.training, children: <TrainingTab dataset={selectedDataset} columns={featureColumns} featurePipelines={featurePipelines} preprocessPipelines={pipelines} models={models} selectedModelId={selectedModelId} selectedModel={selectedModel} preview={modelPreview} analysis={modelAnalysis} listLoading={workspaceLoading} previewLoading={modelPreviewLoading} analysisLoading={modelAnalysisLoading} running={runningTraining} onRun={(values) => void handleRunTraining(values)} onSelectModel={setSelectedModelId} /> },
+            { key: 'training', label: stageLabels.training, children: <TrainingTab dataset={selectedDataset} columns={datasetColumns} featurePipelines={featurePipelines} preprocessPipelines={pipelines} models={models} selectedModelId={selectedModelId} selectedModel={selectedModel} preview={modelPreview} analysis={modelAnalysis} listLoading={workspaceLoading} previewLoading={modelPreviewLoading} analysisLoading={modelAnalysisLoading} running={runningTraining} onRun={(values) => void handleRunTraining(values)} onSelectModel={setSelectedModelId} /> },
             { key: 'analysis', label: stageLabels.analysis, children: <AnalysisTab project={project} models={models} selectedModelId={selectedModelId} selectedModel={selectedModel} preview={modelPreview} analysis={modelAnalysis} llmConfig={llmConfig} llmExplanation={llmExplanation} listLoading={workspaceLoading} previewLoading={modelPreviewLoading} analysisLoading={modelAnalysisLoading} llmConfigLoading={llmConfigLoading} savingLlmConfig={savingLlmConfig} testingLlmConfig={testingLlmConfig} explainingWithLlm={explainingWithLlm} onSelectModel={setSelectedModelId} onSaveLlmConfig={(values) => void handleSaveLlmConfig(values)} onTestLlmConfig={(values) => void handleTestLlmConfig(values)} onRunLlmExplanation={(topK) => void handleRunLlmExplanation(topK)} /> },
           ]}
         />

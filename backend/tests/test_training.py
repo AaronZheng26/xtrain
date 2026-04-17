@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.schemas.training import TrainingRequest
 from app.services.training import _build_signal_summaries, _select_training_feature_columns
+from app.models.feature_pipeline import FeaturePipeline
 
 
 class TrainingFeatureSelectionTests(unittest.TestCase):
@@ -36,6 +37,7 @@ class TrainingFeatureSelectionTests(unittest.TestCase):
             payload,
             dataset_label_column="is_anomaly",
             target_column="is_anomaly",
+            dataset_schema_columns=list(frame.columns),
             preprocess_pipeline=None,
             feature_pipeline=None,
         )
@@ -67,6 +69,7 @@ class TrainingFeatureSelectionTests(unittest.TestCase):
             payload,
             dataset_label_column=None,
             target_column=None,
+            dataset_schema_columns=list(frame.columns),
             preprocess_pipeline=None,
             feature_pipeline=None,
         )
@@ -97,6 +100,7 @@ class TrainingFeatureSelectionTests(unittest.TestCase):
             payload,
             dataset_label_column=None,
             target_column=None,
+            dataset_schema_columns=list(frame.columns),
             preprocess_pipeline=None,
             feature_pipeline=None,
         )
@@ -104,6 +108,89 @@ class TrainingFeatureSelectionTests(unittest.TestCase):
         self.assertIn("raw_message_entropy", result["used_feature_columns"])
         self.assertIn("raw_message_length", result["used_feature_columns"])
         self.assertEqual(result["exclusion_reasons"]["raw_message"], "raw_text_column")
+
+    def test_feature_pipeline_defaults_only_use_training_candidates(self):
+        frame = pd.DataFrame(
+            {
+                "raw_message": ["timeout on db", "login failed", "ok"],
+                "session_id": ["session-a", "session-b", "session-c"],
+                "raw_message_entropy": [3.1, 3.4, 1.2],
+                "source_ip_15m_count": [4, 8, 1],
+            }
+        )
+        feature_pipeline = FeaturePipeline(
+            project_id=1,
+            dataset_version_id=1,
+            name="feature-defaults",
+            steps=[],
+            output_schema=[{"name": column} for column in frame.columns],
+            training_candidate_columns=["raw_message_entropy", "source_ip_15m_count"],
+            analysis_retained_columns=["raw_message", "session_id"],
+        )
+        payload = TrainingRequest(
+            project_id=1,
+            dataset_version_id=1,
+            name="selection-test-4",
+            mode="unsupervised",
+            algorithm="isolation_forest",
+            feature_columns=[],
+        )
+
+        result = _select_training_feature_columns(
+            frame,
+            payload,
+            dataset_label_column=None,
+            target_column=None,
+            dataset_schema_columns=["raw_message", "session_id"],
+            preprocess_pipeline=None,
+            feature_pipeline=feature_pipeline,
+        )
+
+        self.assertEqual(result["selection_source"], "feature_pipeline_candidates")
+        self.assertEqual(result["used_feature_columns"], ["raw_message_entropy", "source_ip_15m_count"])
+        self.assertEqual(result["exclusion_reasons"]["raw_message"], "not_in_training_candidates")
+        self.assertEqual(result["exclusion_reasons"]["session_id"], "not_in_training_candidates")
+
+    def test_feature_pipeline_fallback_prefers_generated_numeric_features(self):
+        frame = pd.DataFrame(
+            {
+                "raw_message": ["timeout on db", "login failed", "ok"],
+                "session_id": ["session-a", "session-b", "session-c"],
+                "raw_message_entropy": [3.1, 3.4, 1.2],
+                "source_ip_15m_spike": [0, 1, 0],
+            }
+        )
+        feature_pipeline = FeaturePipeline(
+            project_id=1,
+            dataset_version_id=1,
+            name="feature-fallback",
+            steps=[],
+            output_schema=[{"name": column} for column in frame.columns],
+            training_candidate_columns=[],
+            analysis_retained_columns=[],
+        )
+        payload = TrainingRequest(
+            project_id=1,
+            dataset_version_id=1,
+            name="selection-test-5",
+            mode="unsupervised",
+            algorithm="isolation_forest",
+            feature_columns=[],
+        )
+
+        result = _select_training_feature_columns(
+            frame,
+            payload,
+            dataset_label_column=None,
+            target_column=None,
+            dataset_schema_columns=["raw_message", "session_id"],
+            preprocess_pipeline=None,
+            feature_pipeline=feature_pipeline,
+        )
+
+        self.assertEqual(result["used_feature_columns"], ["raw_message_entropy", "source_ip_15m_spike"])
+        self.assertEqual(result["exclusion_reasons"]["raw_message"], "not_in_training_candidates")
+        self.assertEqual(result["exclusion_reasons"]["session_id"], "not_in_training_candidates")
 
     def test_signal_summaries_highlight_spike_and_count_features(self):
         frame = pd.DataFrame(

@@ -375,6 +375,45 @@ export function FeatureTab(props: Props) {
     () => describeQuickTaskPlan(quickStrategy, quickTaskConfig, quickTaskSteps),
     [quickStrategy, quickTaskConfig, quickTaskSteps],
   )
+  const previewTrainingCandidateColumns = props.preview?.training_candidate_columns ?? []
+  const previewAnalysisRetainedColumns = props.preview?.analysis_retained_columns ?? []
+  const recommendedTrainingColumns = useMemo(() => {
+    if (previewTrainingCandidateColumns.length) return previewTrainingCandidateColumns
+    if (props.selectedPipeline?.training_candidate_columns.length) return props.selectedPipeline.training_candidate_columns
+    if (mode === 'quick' && quickStrategy === 'behavior_tracking') return behaviorTrackingSummary.generatedColumns
+    if (mode === 'quick' && quickStrategy !== 'template') return quickTaskPreview.generatedColumns
+    return inferDraftGeneratedColumns(draftSteps)
+  }, [
+    behaviorTrackingSummary.generatedColumns,
+    draftSteps,
+    mode,
+    previewTrainingCandidateColumns,
+    props.selectedPipeline,
+    quickStrategy,
+    quickTaskPreview.generatedColumns,
+  ])
+  const analysisRetainedColumns = useMemo(() => {
+    if (previewAnalysisRetainedColumns.length) return previewAnalysisRetainedColumns
+    if (props.selectedPipeline?.analysis_retained_columns.length) return props.selectedPipeline.analysis_retained_columns
+    if (mode === 'quick' && quickStrategy === 'behavior_tracking') {
+      return [
+        behaviorTracking?.groupKey,
+        behaviorTracking?.timeColumn,
+        ...(behaviorTracking?.targetColumns ?? []),
+      ].filter((column): column is string => Boolean(column))
+    }
+    if (mode === 'quick' && quickStrategy !== 'template') {
+      return quickTaskConfig?.targetColumns ?? []
+    }
+    return []
+  }, [
+    behaviorTracking,
+    mode,
+    previewAnalysisRetainedColumns,
+    props.selectedPipeline,
+    quickStrategy,
+    quickTaskConfig,
+  ])
 
   function handleSubmit(values: FeatureFormValues) {
     if (values.mode === 'quick' && values.quickStrategy === 'behavior_tracking') {
@@ -959,6 +998,40 @@ export function FeatureTab(props: Props) {
                   </Card>
                 </>
               )}
+              <Card size="small" className="nested-card" title="训练承接说明">
+                <Space direction="vertical" size={12} className="full-width">
+                  <div>
+                    <Text strong>推荐进入训练</Text>
+                    <div className="tag-wall">
+                      {recommendedTrainingColumns.length ? (
+                        recommendedTrainingColumns.map((column) => (
+                          <Tag color="green" key={`candidate-${column}`}>{column}</Tag>
+                        ))
+                      ) : (
+                        <Text type="secondary">当前还没有识别到默认训练候选列。运行后如果只有原始保留字段，建议补一个统计或行为类配方。</Text>
+                      )}
+                    </div>
+                  </div>
+                  <div>
+                    <Text strong>仅保留作分析</Text>
+                    <div className="tag-wall">
+                      {analysisRetainedColumns.length ? (
+                        analysisRetainedColumns.map((column) => (
+                          <Tag color="gold" key={`retained-${column}`}>{column}</Tag>
+                        ))
+                      ) : (
+                        <Text type="secondary">当前没有显式标记的分析保留列；原始上下文字段默认仍会落盘，便于解释和溯源。</Text>
+                      )}
+                    </div>
+                  </div>
+                  <Alert
+                    type="info"
+                    showIcon
+                    message="特征页会先把训练候选和分析保留分开，再交给训练页确认。"
+                    description="默认情况下，新生成的统计/布尔/行为特征会优先进入训练；原始 ID、原始文本和上下文字段继续保留在输出里，但不会默认混入训练。"
+                  />
+                </Space>
+              </Card>
             </Space>
           </DetailPanel>
 
@@ -1163,6 +1236,13 @@ function describeQuickTaskPlan(
 
 function describeGeneratedColumn(step: FeatureStepDraft) {
   return step.output_mode.output_column || `${(step.input_selector.columns ?? []).join('_')}${step.output_mode.suffix ?? ''}`
+}
+
+function inferDraftGeneratedColumns(steps: FeatureStepDraft[]) {
+  return steps
+    .filter((step) => step.enabled !== false)
+    .map((step) => describeGeneratedColumn(step))
+    .filter((column, index, columns) => Boolean(column) && columns.indexOf(column) === index)
 }
 
 function buildBehaviorTrackingSteps(

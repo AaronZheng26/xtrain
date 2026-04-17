@@ -130,6 +130,7 @@ def run_training_job(job_id: int, model_id: int) -> None:
                 frame,
                 dataset.label_column,
                 payload,
+                dataset_schema_columns=[field.get("name") for field in dataset.schema_snapshot if field.get("name")],
                 preprocess_pipeline=preprocess_pipeline,
                 feature_pipeline=feature_pipeline,
             )
@@ -281,6 +282,7 @@ def _train_model(
     frame: pd.DataFrame,
     dataset_label_column: str | None,
     payload: TrainingRequest,
+    dataset_schema_columns: list[str] | None = None,
     preprocess_pipeline: PreprocessPipeline | None = None,
     feature_pipeline: FeaturePipeline | None = None,
 ) -> dict[str, Any]:
@@ -294,6 +296,7 @@ def _train_model(
         payload,
         dataset_label_column=dataset_label_column,
         target_column=target_column,
+        dataset_schema_columns=dataset_schema_columns or [],
         preprocess_pipeline=preprocess_pipeline,
         feature_pipeline=feature_pipeline,
     )
@@ -424,41 +427,60 @@ def _select_training_feature_columns(
     payload: TrainingRequest,
     dataset_label_column: str | None,
     target_column: str | None,
+    dataset_schema_columns: list[str],
     preprocess_pipeline: PreprocessPipeline | None,
     feature_pipeline: FeaturePipeline | None,
 ) -> dict[str, Any]:
     available_columns = list(frame.columns)
     max_categorical_cardinality = max(int(payload.training_params.get("max_categorical_cardinality", DEFAULT_MAX_CATEGORICAL_CARDINALITY)), 5)
 
-    if payload.feature_columns:
-        requested_feature_columns = [column for column in payload.feature_columns if column in available_columns]
-        selection_source = "explicit_request"
-    else:
-        requested_feature_columns = _default_requested_feature_columns(
-            available_columns,
-            preprocess_pipeline=preprocess_pipeline,
-            feature_pipeline=feature_pipeline,
-        )
-        selection_source = "feature_pipeline_defaults" if feature_pipeline else "preprocess_pipeline_defaults" if preprocess_pipeline else "dataset_safe_defaults"
-
-    used_feature_columns: list[str] = []
-    excluded_feature_columns: list[str] = []
-    exclusion_reasons: dict[str, str] = {}
-
-    for column in requested_feature_columns:
-        reason = _get_feature_exclusion_reason(
+    if feature_pipeline:
+        feature_metadata = _resolve_feature_pipeline_selection_metadata(
             frame,
-            column,
+            feature_pipeline,
+            preprocess_pipeline=preprocess_pipeline,
+            dataset_schema_columns=dataset_schema_columns,
+        )
+        if payload.feature_columns:
+            requested_feature_columns = [column for column in payload.feature_columns if column in available_columns]
+            selection_source = "explicit_request"
+            default_exclusion_reasons = {}
+        else:
+            requested_feature_columns = [column for column in feature_metadata["training_candidate_columns"] if column in available_columns]
+            selection_source = "feature_pipeline_candidates"
+            default_exclusion_reasons = {
+                column: "not_in_training_candidates"
+                for column in feature_metadata["analysis_retained_columns"]
+                if column in available_columns
+            }
+
+        used_feature_columns, hard_exclusion_reasons = _select_feature_output_columns(
+            frame,
+            requested_feature_columns,
+            target_column=target_column,
+        )
+        exclusion_reasons = {**default_exclusion_reasons, **hard_exclusion_reasons}
+        excluded_feature_columns = list(exclusion_reasons)
+    else:
+        if payload.feature_columns:
+            requested_feature_columns = [column for column in payload.feature_columns if column in available_columns]
+            selection_source = "explicit_request"
+        else:
+            requested_feature_columns = _default_requested_feature_columns(
+                available_columns,
+                preprocess_pipeline=preprocess_pipeline,
+                feature_pipeline=feature_pipeline,
+            )
+            selection_source = "preprocess_pipeline_defaults" if preprocess_pipeline else "dataset_safe_defaults"
+
+        used_feature_columns, exclusion_reasons = _select_safe_default_columns(
+            frame,
+            requested_feature_columns,
             target_column=target_column,
             dataset_label_column=dataset_label_column,
-            used_feature_columns=used_feature_columns,
             max_categorical_cardinality=max_categorical_cardinality,
         )
-        if reason:
-            excluded_feature_columns.append(column)
-            exclusion_reasons[column] = reason
-            continue
-        used_feature_columns.append(column)
+        excluded_feature_columns = list(exclusion_reasons)
 
     return {
         "selection_source": selection_source,
@@ -484,9 +506,142 @@ def _default_requested_feature_columns(
     return list(available_columns)
 
 
-def _get_feature_exclusion_reason(
+def _resolve_feature_pipeline_selection_metadata(
+    frame: pd.DataFrame,
+    feature_pipeline: FeaturePipeline,
+    *,
+    preprocess_pipeline: PreprocessPipeline | None,
+    dataset_schema_columns: list[str],
+) -> dict[str, list[str]]:
+    stored_training_candidates = [column for column in (feature_pipeline.training_candidate_columns or []) if column in frame.columns]
+    stored_analysis_columns = [column for column in (feature_pipeline.analysis_retained_columns or []) if column in frame.columns]
+    if stored_training_candidates or stored_analysis_columns:
+        accounted = set(stored_training_candidates) | set(stored_analysis_columns)
+        remaining = [column for column in frame.columns if column not in accounted]
+        return {
+            "training_candidate_columns": stored_training_candidates,
+            "analysis_retained_columns": stored_analysis_columns + remaining,
+        }
+
+    upstream_columns = _resolve_feature_pipeline_input_columns(
+        preprocess_pipeline=preprocess_pipeline,
+        dataset_schema_columns=dataset_schema_columns,
+    )
+    training_candidate_columns: list[str] = []
+    analysis_retained_columns: list[str] = []
+
+    for column in frame.columns:
+        series = frame[column]
+        is_generated = column not in upstream_columns
+        if is_generated and pd.api.types.is_numeric_dtype(series):
+            training_candidate_columns.append(column)
+        else:
+            analysis_retained_columns.append(column)
+
+    return {
+        "training_candidate_columns": training_candidate_columns,
+        "analysis_retained_columns": analysis_retained_columns,
+    }
+
+
+def _resolve_feature_pipeline_input_columns(
+    *,
+    preprocess_pipeline: PreprocessPipeline | None,
+    dataset_schema_columns: list[str],
+) -> list[str]:
+    if preprocess_pipeline and preprocess_pipeline.output_schema:
+        return [field.get("name") for field in preprocess_pipeline.output_schema if field.get("name")]
+    return list(dataset_schema_columns)
+
+
+def _select_feature_output_columns(
+    frame: pd.DataFrame,
+    requested_feature_columns: list[str],
+    *,
+    target_column: str | None,
+    used_feature_columns: list[str] | None = None,
+) -> tuple[list[str], dict[str, str]]:
+    selected_columns = list(used_feature_columns or [])
+    exclusion_reasons: dict[str, str] = {}
+
+    for column in requested_feature_columns:
+        reason = _get_feature_output_exclusion_reason(
+            frame,
+            column,
+            target_column=target_column,
+            used_feature_columns=selected_columns,
+        )
+        if reason:
+            exclusion_reasons[column] = reason
+            continue
+        selected_columns.append(column)
+
+    return selected_columns, exclusion_reasons
+
+
+def _select_safe_default_columns(
+    frame: pd.DataFrame,
+    requested_feature_columns: list[str],
+    *,
+    target_column: str | None,
+    dataset_label_column: str | None,
+    max_categorical_cardinality: int,
+) -> tuple[list[str], dict[str, str]]:
+    used_feature_columns: list[str] = []
+    exclusion_reasons: dict[str, str] = {}
+
+    for column in requested_feature_columns:
+        reason = _get_safe_default_exclusion_reason(
+            frame,
+            column,
+            target_column=target_column,
+            dataset_label_column=dataset_label_column,
+            used_feature_columns=used_feature_columns,
+            max_categorical_cardinality=max_categorical_cardinality,
+        )
+        if reason:
+            exclusion_reasons[column] = reason
+            continue
+        used_feature_columns.append(column)
+
+    return used_feature_columns, exclusion_reasons
+
+
+def _get_feature_output_exclusion_reason(
     frame: pd.DataFrame,
     column: str,
+    *,
+    target_column: str | None,
+    used_feature_columns: list[str],
+) -> str | None:
+    if column not in frame.columns:
+        return "missing_from_input"
+    if column in RESERVED_TRAINING_COLUMNS:
+        return "reserved_training_column"
+    if target_column and column == target_column:
+        return "target_column"
+
+    series = frame[column]
+    non_null = series.dropna()
+    if non_null.empty:
+        return "empty_after_generation"
+    if int(non_null.nunique(dropna=True)) <= 1:
+        return "constant_after_generation"
+
+    if target_column and target_column in frame.columns and _series_equal(series, frame[target_column]):
+        return "duplicates_target_column"
+
+    for existing_column in used_feature_columns:
+        if existing_column in frame.columns and _series_equal(series, frame[existing_column]):
+            return f"duplicates_feature:{existing_column}"
+
+    return None
+
+
+def _get_safe_default_exclusion_reason(
+    frame: pd.DataFrame,
+    column: str,
+    *,
     target_column: str | None,
     dataset_label_column: str | None,
     used_feature_columns: list[str],
@@ -502,11 +657,13 @@ def _get_feature_exclusion_reason(
     normalized_name = _normalize_column_name(column)
     if _is_label_like_column(normalized_name) and column not in {target_column, dataset_label_column}:
         return "label_like_column"
+
     series = frame[column]
     if _is_identifier_column(normalized_name) and not pd.api.types.is_numeric_dtype(series):
         return "identifier_column"
     if _is_raw_text_column(normalized_name) and not pd.api.types.is_numeric_dtype(series):
         return "raw_text_column"
+
     non_null = series.dropna()
     if non_null.empty:
         return "empty_column"

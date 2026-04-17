@@ -48,7 +48,7 @@ def read_feature_pipeline(pipeline_id: int, db: Session = Depends(get_db)) -> Fe
 @router.get("/features/{pipeline_id}/preview", response_model=FeaturePreviewRead)
 def read_feature_preview(pipeline_id: int, limit: int = 20, db: Session = Depends(get_db)) -> FeaturePreviewRead:
     pipeline = get_feature_pipeline(db, pipeline_id)
-    return FeaturePreviewRead(**preview_feature_pipeline(pipeline, limit=limit))
+    return FeaturePreviewRead(**preview_feature_pipeline(db, pipeline, limit=limit))
 
 
 @router.post("/features/step-preview", response_model=FeatureStepPreviewRead)

@@ -23,6 +23,8 @@ class FeaturePipeline(Base):
     output_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     output_row_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     output_schema: Mapped[list[dict]] = mapped_column(JSON, default=list, nullable=False)
+    training_candidate_columns: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    analysis_retained_columns: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),

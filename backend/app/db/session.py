@@ -1,7 +1,7 @@
 from collections.abc import Generator
 from pathlib import Path
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import NullPool
 
@@ -30,6 +30,27 @@ def initialize_database() -> None:
     import app.models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    _ensure_feature_pipeline_columns()
+
+
+def _ensure_feature_pipeline_columns() -> None:
+    inspector = inspect(engine)
+    if "feature_pipelines" not in inspector.get_table_names():
+        return
+
+    existing_columns = {column["name"] for column in inspector.get_columns("feature_pipelines")}
+    alter_statements: list[str] = []
+    if "training_candidate_columns" not in existing_columns:
+        alter_statements.append("ALTER TABLE feature_pipelines ADD COLUMN training_candidate_columns JSON NOT NULL DEFAULT '[]'")
+    if "analysis_retained_columns" not in existing_columns:
+        alter_statements.append("ALTER TABLE feature_pipelines ADD COLUMN analysis_retained_columns JSON NOT NULL DEFAULT '[]'")
+
+    if not alter_statements:
+        return
+
+    with engine.begin() as connection:
+        for statement in alter_statements:
+            connection.execute(text(statement))
 
 
 def get_db() -> Generator[Session, None, None]:

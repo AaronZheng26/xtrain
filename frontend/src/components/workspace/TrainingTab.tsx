@@ -32,7 +32,23 @@ type Props = {
 export function TrainingTab(props: Props) {
   const [form] = Form.useForm<TrainingFormValues>()
   const mode = Form.useWatch('mode', form) ?? 'supervised'
+  const featurePipelineId = Form.useWatch('featurePipelineId', form)
+  const preprocessPipelineId = Form.useWatch('preprocessPipelineId', form)
   const exclusionReasons = props.selectedModel?.exclusion_reasons ?? {}
+  const selectedInputFeaturePipeline = props.featurePipelines.find((pipeline) => pipeline.id === featurePipelineId) ?? null
+  const selectedInputPreprocessPipeline = props.preprocessPipelines.find((pipeline) => pipeline.id === preprocessPipelineId) ?? null
+  const featureColumnOptions = selectedInputFeaturePipeline?.output_schema.map((field) => field.name)
+    ?? selectedInputPreprocessPipeline?.output_schema.map((field) => field.name)
+    ?? props.columns
+  const targetColumnOptions = Array.from(
+    new Set([
+      ...(props.dataset?.schema_snapshot.map((field) => field.name) ?? []),
+      ...featureColumnOptions,
+    ]),
+  )
+  const recommendedTrainingColumns = selectedInputFeaturePipeline?.training_candidate_columns ?? []
+  const analysisRetainedColumns = selectedInputFeaturePipeline?.analysis_retained_columns ?? []
+  const selectionSource = String(props.selectedModel?.report_json?.selection_source ?? '')
 
   useEffect(() => {
     if (props.dataset) {
@@ -45,6 +61,13 @@ export function TrainingTab(props: Props) {
       form.resetFields()
     }
   }, [props.dataset, props.models.length, form])
+
+  useEffect(() => {
+    if (!selectedInputFeaturePipeline) {
+      return
+    }
+    form.setFieldValue('featureColumns', selectedInputFeaturePipeline.training_candidate_columns)
+  }, [form, selectedInputFeaturePipeline])
 
   const algorithmOptions =
     mode === 'supervised'
@@ -76,16 +99,28 @@ export function TrainingTab(props: Props) {
                   <Select options={algorithmOptions} />
                 </Form.Item>
                 <Form.Item name="targetColumn" label="目标/标签列">
-                  <Select allowClear options={props.columns.map(toOption)} />
+                  <Select allowClear options={targetColumnOptions.map(toOption)} />
                 </Form.Item>
                 <Form.Item name="featurePipelineId" label="输入特征版本">
                   <Select allowClear options={props.featurePipelines.map((pipeline) => ({ label: pipeline.name, value: pipeline.id }))} />
                 </Form.Item>
+                {selectedInputFeaturePipeline ? (
+                  <Alert
+                    type="info"
+                    showIcon
+                    message="已切换到特征页推荐训练字段"
+                    description={`默认会使用 ${recommendedTrainingColumns.length} 个训练候选字段；${analysisRetainedColumns.length} 个字段仅保留作分析与解释，你仍然可以在下面手动覆盖。`}
+                  />
+                ) : null}
                 <Form.Item name="preprocessPipelineId" label="输入预处理版本">
                   <Select allowClear options={props.preprocessPipelines.map((pipeline) => ({ label: pipeline.name, value: pipeline.id }))} />
                 </Form.Item>
-                <Form.Item name="featureColumns" label="训练字段">
-                  <Select mode="multiple" allowClear options={props.columns.map(toOption)} />
+                <Form.Item
+                  name="featureColumns"
+                  label="训练字段"
+                  extra={selectedInputFeaturePipeline ? '默认使用特征页推荐训练字段；这里的修改属于手动覆盖。' : '留空时会按当前数据来源使用默认安全筛选。'}
+                >
+                  <Select mode="multiple" allowClear options={featureColumnOptions.map(toOption)} />
                 </Form.Item>
                 <Button type="primary" htmlType="submit" icon={<ExperimentOutlined />} loading={props.running}>
                   启动训练
@@ -144,7 +179,11 @@ export function TrainingTab(props: Props) {
                 <Alert
                   type="warning"
                   showIcon
-                  message={`已自动排除 ${props.selectedModel.excluded_feature_columns.length} 个字段，避免标签泄漏、ID 干扰或高基数字段直接进入训练。`}
+                  message={
+                    props.selectedModel.feature_pipeline_id
+                      ? `有 ${props.selectedModel.excluded_feature_columns.length} 个字段未进入训练，它们主要是分析保留列，或在生成后未通过常量/重复等硬性校验。`
+                      : `已自动排除 ${props.selectedModel.excluded_feature_columns.length} 个字段，避免标签泄漏、ID 干扰或高基数字段直接进入训练。`
+                  }
                 />
               ) : null}
               <Card size="small" className="nested-card" title="指标摘要">
@@ -156,6 +195,22 @@ export function TrainingTab(props: Props) {
               </Card>
               <Card size="small" className="nested-card" title="字段选择摘要">
                 <Space direction="vertical" size={12} className="full-width">
+                  <Descriptions
+                    column={1}
+                    size="small"
+                    items={[
+                      {
+                        key: 'selectionSource',
+                        label: '字段来源',
+                        children:
+                          selectionSource === 'feature_pipeline_candidates'
+                            ? '特征页推荐训练字段'
+                            : selectionSource === 'explicit_request'
+                              ? '手动覆盖'
+                              : selectionSource || '默认筛选',
+                      },
+                    ]}
+                  />
                   <div>
                     <Text strong>参与训练</Text>
                     <div className="tag-wall">
@@ -166,7 +221,7 @@ export function TrainingTab(props: Props) {
                   </div>
                   {props.selectedModel.excluded_feature_columns.length > 0 ? (
                     <div>
-                      <Text strong>自动排除</Text>
+                      <Text strong>{props.selectedModel.feature_pipeline_id ? '未纳入本次训练' : '自动排除'}</Text>
                       <div className="tag-wall">
                         {props.selectedModel.excluded_feature_columns.map((column) => (
                           <Tag key={`excluded-${column}`} color="volcano">

@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 
 import pandas as pd
 from fastapi import HTTPException
-from pandas.api.types import is_datetime64_any_dtype, is_numeric_dtype, is_string_dtype
+from pandas.api.types import is_bool_dtype, is_datetime64_any_dtype, is_numeric_dtype, is_string_dtype
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -324,6 +324,7 @@ def run_feature_pipeline_job(job_id: int, pipeline_id: int) -> None:
 
             preprocess_pipeline = _get_preprocess_pipeline(db, pipeline.project_id, pipeline.dataset_version_id, pipeline.preprocess_pipeline_id)
             frame = _load_feature_input_frame(db, pipeline.dataset_version_id, preprocess_pipeline)
+            input_columns = list(frame.columns)
             _set_job_state(db, job, status="running", progress=35, message="Applying feature steps")
 
             frame = _apply_steps(frame, pipeline.steps)
@@ -338,6 +339,10 @@ def run_feature_pipeline_job(job_id: int, pipeline_id: int) -> None:
             pipeline.output_path = str(output_path)
             pipeline.output_row_count = int(len(frame.index))
             pipeline.output_schema = output_schema
+            (
+                pipeline.training_candidate_columns,
+                pipeline.analysis_retained_columns,
+            ) = _derive_feature_training_metadata(frame, input_columns)
             db.add(pipeline)
 
             _set_job_state(db, job, status="completed", progress=100, message="Feature pipeline completed")
@@ -369,24 +374,35 @@ def list_feature_pipelines(db: Session, project_id: int, dataset_version_id: int
     if dataset_version_id is not None:
         query = query.where(FeaturePipeline.dataset_version_id == dataset_version_id)
     query = query.order_by(FeaturePipeline.created_at.desc())
-    return list(db.scalars(query))
+    pipelines = list(db.scalars(query))
+    for pipeline in pipelines:
+        _hydrate_feature_pipeline_metadata(db, pipeline)
+    return pipelines
 
 
 def get_feature_pipeline(db: Session, pipeline_id: int) -> FeaturePipeline:
     pipeline = db.get(FeaturePipeline, pipeline_id)
     if not pipeline:
         raise HTTPException(status_code=404, detail="Feature pipeline not found")
+    _hydrate_feature_pipeline_metadata(db, pipeline)
     return pipeline
 
 
-def preview_feature_pipeline(pipeline: FeaturePipeline, limit: int = 20) -> dict[str, Any]:
+def preview_feature_pipeline(db: Session, pipeline: FeaturePipeline, limit: int = 20) -> dict[str, Any]:
     if not pipeline.output_path:
         raise HTTPException(status_code=400, detail="Feature pipeline has no output preview yet")
     frame = load_parquet_frame(pipeline.output_path, limit=min(max(limit, 1), 50))
+    training_candidate_columns, analysis_retained_columns = _resolve_feature_pipeline_metadata(
+        pipeline,
+        frame,
+        input_columns=_resolve_feature_pipeline_input_columns(db, pipeline),
+    )
     return {
         "pipeline_id": pipeline.id,
         "columns": list(frame.columns),
         "rows": json_safe_records(frame),
+        "training_candidate_columns": training_candidate_columns,
+        "analysis_retained_columns": analysis_retained_columns,
     }
 
 
@@ -430,6 +446,97 @@ def preview_feature_step(
         "before_rows": json_safe_records(before_frame.head(limit)),
         "after_rows": json_safe_records(after_frame.head(limit)),
     }
+
+
+def _derive_feature_training_metadata(frame: pd.DataFrame, input_columns: list[str]) -> tuple[list[str], list[str]]:
+    training_candidate_columns: list[str] = []
+    analysis_retained_columns: list[str] = []
+
+    for column in frame.columns:
+        if column not in input_columns and _is_training_candidate_series(frame[column]):
+            training_candidate_columns.append(column)
+        else:
+            analysis_retained_columns.append(column)
+
+    return training_candidate_columns, analysis_retained_columns
+
+
+def _resolve_feature_pipeline_metadata(
+    pipeline: FeaturePipeline,
+    frame: pd.DataFrame,
+    *,
+    input_columns: list[str],
+) -> tuple[list[str], list[str]]:
+    stored_training = [column for column in (pipeline.training_candidate_columns or []) if column in frame.columns]
+    stored_analysis = [column for column in (pipeline.analysis_retained_columns or []) if column in frame.columns]
+
+    if stored_training or stored_analysis:
+        accounted = set(stored_training) | set(stored_analysis)
+        remaining = [column for column in frame.columns if column not in accounted]
+        return stored_training, stored_analysis + remaining
+
+    return _derive_feature_training_metadata(frame, input_columns)
+
+
+def _hydrate_feature_pipeline_metadata(db: Session, pipeline: FeaturePipeline) -> FeaturePipeline:
+    input_columns = _resolve_feature_pipeline_input_columns(db, pipeline)
+    training_candidate_columns, analysis_retained_columns = _resolve_feature_pipeline_schema_metadata(pipeline, input_columns)
+    pipeline.training_candidate_columns = training_candidate_columns
+    pipeline.analysis_retained_columns = analysis_retained_columns
+    return pipeline
+
+
+def _resolve_feature_pipeline_schema_metadata(
+    pipeline: FeaturePipeline,
+    input_columns: list[str],
+) -> tuple[list[str], list[str]]:
+    stored_training = list(pipeline.training_candidate_columns or [])
+    stored_analysis = list(pipeline.analysis_retained_columns or [])
+    output_columns = [field.get("name") for field in pipeline.output_schema if field.get("name")]
+
+    if stored_training or stored_analysis:
+        accounted = set(stored_training) | set(stored_analysis)
+        remaining = [column for column in output_columns if column not in accounted]
+        return stored_training, stored_analysis + remaining
+
+    return _infer_feature_training_metadata_from_schema(pipeline.output_schema, input_columns)
+
+
+def _infer_feature_training_metadata_from_schema(
+    output_schema: list[dict[str, Any]],
+    input_columns: list[str],
+) -> tuple[list[str], list[str]]:
+    training_candidate_columns: list[str] = []
+    analysis_retained_columns: list[str] = []
+    for field in output_schema:
+        column = field.get("name")
+        if not column:
+            continue
+        dtype_name = str(field.get("dtype") or "")
+        if column not in input_columns and _is_training_candidate_dtype(dtype_name):
+            training_candidate_columns.append(column)
+        else:
+            analysis_retained_columns.append(column)
+    return training_candidate_columns, analysis_retained_columns
+
+
+def _resolve_feature_pipeline_input_columns(db: Session, pipeline: FeaturePipeline) -> list[str]:
+    if pipeline.preprocess_pipeline_id:
+        preprocess_pipeline = db.get(PreprocessPipeline, pipeline.preprocess_pipeline_id)
+        if preprocess_pipeline and preprocess_pipeline.output_schema:
+            return [field.get("name") for field in preprocess_pipeline.output_schema if field.get("name")]
+
+    dataset = get_dataset(db, pipeline.dataset_version_id)
+    return [field.get("name") for field in dataset.schema_snapshot if field.get("name")]
+
+
+def _is_training_candidate_series(series: pd.Series) -> bool:
+    return is_numeric_dtype(series) or is_bool_dtype(series)
+
+
+def _is_training_candidate_dtype(dtype_name: str) -> bool:
+    normalized = dtype_name.strip().lower()
+    return normalized.startswith(("int", "uint", "float", "bool")) or normalized in {"int64", "float64", "boolean"}
 
 
 def list_feature_templates(db: Session, project_id: int) -> list[dict[str, Any]]:

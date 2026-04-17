@@ -312,6 +312,8 @@ export type FeaturePipeline = {
   output_path: string | null
   output_row_count: number
   output_schema: SchemaField[]
+  training_candidate_columns: string[]
+  analysis_retained_columns: string[]
   created_at: string
   updated_at: string
 }
@@ -320,6 +322,8 @@ export type FeaturePreviewRead = {
   pipeline_id: number
   columns: string[]
   rows: Record<string, unknown>[]
+  training_candidate_columns: string[]
+  analysis_retained_columns: string[]
 }
 
 export type FeatureTemplate = {
