@@ -247,6 +247,35 @@
   gap: 8px;
 }
 
+.workspace-guided-stack {
+  margin-bottom: 20px;
+}
+
+.analysis-goal-radio {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.analysis-goal-radio .ant-radio-button-wrapper {
+  border-inline-start-width: 1px;
+  border-radius: 999px;
+}
+
+.analysis-goal-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.readiness-summary-grid {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+  gap: 20px;
+  align-items: center;
+}
+
 .issue-bucket-grid,
 .advisor-issue-grid,
 .task-category-grid {
@@ -457,6 +486,11 @@
   .workspace-actions {
     min-width: auto;
     width: 100%;
+  }
+
+  .analysis-goal-controls,
+  .readiness-summary-grid {
+    grid-template-columns: 1fr;
   }
 
   .app-content,

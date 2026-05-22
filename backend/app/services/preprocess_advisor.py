@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from datetime import UTC, datetime
 from typing import Any
 
@@ -356,6 +357,12 @@ def _build_field_advice(
     return advice_list
 
 
+def _datetime_parse_ratio(values: pd.Series) -> float:
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Could not infer format.*", category=UserWarning)
+        return float(pd.to_datetime(values, errors="coerce").notna().mean())
+
+
 def _infer_cast_reason(column: str, series: pd.Series, target_column: str | None) -> str | None:
     if column == target_column or pd.api.types.is_numeric_dtype(series) or pd.api.types.is_datetime64_any_dtype(series):
         return None
@@ -369,7 +376,7 @@ def _infer_cast_reason(column: str, series: pd.Series, target_column: str | None
     if numeric_ratio >= NUMERIC_CAST_RATIO:
         return "cast_numeric"
 
-    datetime_ratio = pd.to_datetime(stringified, errors="coerce").notna().mean()
+    datetime_ratio = _datetime_parse_ratio(stringified)
     if datetime_ratio >= DATETIME_CAST_RATIO:
         return "cast_datetime"
 
@@ -464,7 +471,7 @@ def _find_time_columns(frame: pd.DataFrame, *, exclude_column: str) -> list[str]
         else:
             non_null = series.dropna()
             if not non_null.empty:
-                parsed_ratio = pd.to_datetime(non_null.astype("string"), errors="coerce").notna().mean()
+                parsed_ratio = _datetime_parse_ratio(non_null.astype("string"))
                 if parsed_ratio >= DATETIME_CAST_RATIO:
                     score += 2
         if score > 0:

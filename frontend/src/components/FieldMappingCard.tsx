@@ -1,5 +1,5 @@
+import { useEffect } from 'react'
 import { Alert, Button, Card, Col, Empty, Form, Row, Select, Space, Tag, Typography } from 'antd'
-import type { FormInstance } from 'antd'
 
 import type { DatasetVersion, FieldMapping } from '../types'
 
@@ -20,11 +20,24 @@ type Props = {
   loading: boolean
   saving: boolean
   columns: string[]
-  form: FormInstance<Record<string, string | undefined>>
-  onSave: () => void
+  onSave: (values: Record<string, string | undefined>) => void
 }
 
-export function FieldMappingCard({ dataset, fieldMapping, loading, saving, columns, form, onSave }: Props) {
+export function FieldMappingCard({ dataset, fieldMapping, loading, saving, columns, onSave }: Props) {
+  const [form] = Form.useForm<Record<string, string | undefined>>()
+
+  useEffect(() => {
+    if (!dataset) {
+      form.resetFields()
+      return
+    }
+    form.setFieldsValue(
+      Object.fromEntries(
+        Object.entries(fieldMapping?.mappings ?? {}).map(([key, value]) => [key, value ?? undefined]),
+      ),
+    )
+  }, [dataset, fieldMapping, form])
+
   return (
     <Card
       title="字段映射确认"
@@ -36,14 +49,14 @@ export function FieldMappingCard({ dataset, fieldMapping, loading, saving, colum
         ) : null
       }
     >
-      {dataset ? (
-        <Space direction="vertical" size={16} style={{ width: '100%' }}>
-          <Alert
-            type="info"
-            showIcon
-            message="字段映射会把原始列对齐到平台标准语义，后续预处理和训练都可以直接复用。"
-          />
-          <Form form={form} layout="vertical">
+      <Form form={form} layout="vertical" onFinish={onSave}>
+        {dataset ? (
+          <Space direction="vertical" size={16} style={{ width: '100%' }}>
+            <Alert
+              type="info"
+              showIcon
+              message="字段映射会把原始列对齐到平台标准语义，后续预处理和训练都可以直接复用。"
+            />
             <Row gutter={12}>
               {Object.entries(standardFieldLabels).map(([fieldKey, label]) => (
                 <Col span={24} key={fieldKey}>
@@ -59,15 +72,15 @@ export function FieldMappingCard({ dataset, fieldMapping, loading, saving, colum
                 </Col>
               ))}
             </Row>
-          </Form>
-          <Button type="primary" loading={saving || loading} onClick={onSave}>
-            保存字段映射
-          </Button>
-          <Text type="secondary">建议优先确认时间、标签和原始消息字段，这样后续链路最稳定。</Text>
-        </Space>
-      ) : (
-        <Empty description="选择一个数据集后才能确认字段映射。" />
-      )}
+            <Button type="primary" htmlType="submit" loading={saving || loading}>
+              保存字段映射
+            </Button>
+            <Text type="secondary">建议优先确认时间、标签和原始消息字段，这样后续链路最稳定。</Text>
+          </Space>
+        ) : (
+          <Empty description="选择一个数据集后才能确认字段映射。" />
+        )}
+      </Form>
     </Card>
   )
 }

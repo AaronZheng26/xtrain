@@ -5,37 +5,37 @@ const nodes: Node[] = [
   {
     id: 'import',
     position: { x: 0, y: 40 },
-    data: { label: '数据导入' },
+    data: { label: '选择分析目标' },
     style: nodeStyle('#1677ff'),
   },
   {
     id: 'preprocess',
     position: { x: 200, y: 40 },
-    data: { label: '预处理' },
+    data: { label: '日志导入与就绪度' },
     style: nodeStyle('#faad14'),
   },
   {
     id: 'feature',
     position: { x: 400, y: 40 },
-    data: { label: '特征提取' },
+    data: { label: '数据整理与异常特征' },
     style: nodeStyle('#13c2c2'),
   },
   {
     id: 'training',
     position: { x: 600, y: 40 },
-    data: { label: '训练/重训练' },
+    data: { label: '建立检测模型' },
     style: nodeStyle('#52c41a'),
   },
   {
     id: 'evaluation',
     position: { x: 820, y: 10 },
-    data: { label: '效果评估' },
+    data: { label: '异常样本预览' },
     style: nodeStyle('#722ed1'),
   },
   {
     id: 'analysis',
     position: { x: 820, y: 110 },
-    data: { label: '异常分析 + Ollama' },
+    data: { label: '异常研判闭环' },
     style: nodeStyle('#eb2f96'),
   },
 ]

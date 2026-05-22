@@ -29,6 +29,55 @@ export type ProjectWorkspaceRoute = {
   tab?: WorkspaceTabKey
 }
 
+export type AnalysisGoalId =
+  | 'web_access_anomaly'
+  | 'login_anomaly'
+  | 'network_traffic_anomaly'
+  | 'program_runtime_anomaly'
+  | 'api_abuse'
+  | 'custom_log_anomaly'
+
+export type AnalysisLogTypeId =
+  | 'nginx_access'
+  | 'program_runtime'
+  | 'nta_flow'
+  | 'csv_table'
+  | 'custom_text'
+
+export type AnalysisModeId =
+  | 'quick_unsupervised'
+  | 'supervised'
+  | 'hybrid'
+  | 'cleaning_only'
+
+export type AnalysisGoalState = {
+  goal: AnalysisGoalId
+  logType: AnalysisLogTypeId
+  mode: AnalysisModeId
+}
+
+export type DatasetReadinessLevel = 'excellent' | 'good' | 'limited' | 'poor'
+
+export type DatasetReadiness = {
+  score: number
+  level: DatasetReadinessLevel
+  row_count: number
+  column_count: number
+  time_range: {
+    start: string | null
+    end: string | null
+  }
+  detected_fields: Record<string, string[]>
+  missing_fields: string[]
+  recommended_goals: string[]
+  recommended_mode: string
+  recommended_templates: string[]
+  warnings: string[]
+  next_steps: string[]
+}
+
+export type InvestigationVerdict = 'true_positive' | 'false_positive' | 'pending'
+
 export type Job = {
   id: number
   name: string

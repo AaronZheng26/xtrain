@@ -5,11 +5,13 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.schemas.dataset import DatasetImportRead, DatasetPreviewRead, DatasetVersionRead, DatasetWorkspaceRead
 from app.schemas.field_mapping import FieldMappingRead, FieldMappingUpdate
+from app.schemas.readiness import DatasetReadinessRead
 from app.services.cleanup import delete_dataset_with_assets
 from app.services.dataset_import import get_dataset, import_dataset, list_datasets, preview_dataset
 from app.services.feature import list_feature_pipelines
 from app.services.field_mapping import get_or_create_field_mapping, update_field_mapping
 from app.services.preprocess import list_preprocess_pipelines
+from app.services.readiness import analyze_dataset_readiness
 from app.services.training import list_model_versions
 
 
@@ -64,6 +66,16 @@ def read_dataset_workspace(dataset_id: int, preview_limit: int = 12, db: Session
         feature_pipelines=list_feature_pipelines(db, dataset.project_id, dataset_version_id=dataset_id),
         models=list_model_versions(db, dataset.project_id, dataset_version_id=dataset_id),
     )
+
+
+@router.get("/{dataset_id}/readiness", response_model=DatasetReadinessRead)
+def read_dataset_readiness(
+    dataset_id: int,
+    goal: str | None = None,
+    log_type: str | None = None,
+    db: Session = Depends(get_db),
+) -> DatasetReadinessRead:
+    return DatasetReadinessRead(**analyze_dataset_readiness(db, dataset_id, goal=goal, log_type=log_type))
 
 
 @router.get("/{dataset_id}/field-mapping", response_model=FieldMappingRead)

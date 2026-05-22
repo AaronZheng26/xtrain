@@ -25,6 +25,8 @@ const tabLabels: Record<WorkspaceTabKey, string> = {
 }
 
 export function WorkspaceHeader({ project, datasetLabel, latestJob, activeTab, onRefresh, onDeleteProject, deletingProject }: Props) {
+  const latestJobLabel = latestJob ? humanizeJobStatus(latestJob) : null
+
   return (
     <div className="workspace-header">
       <div>
@@ -50,7 +52,7 @@ export function WorkspaceHeader({ project, datasetLabel, latestJob, activeTab, o
               <Space>
                 <LineChartOutlined />
                 <Text strong>{latestJob.name}</Text>
-                <Tag color={latestJob.status === 'completed' ? 'green' : 'processing'}>{latestJob.status}</Tag>
+                <Tag color={jobStatusColor(latestJob.status)}>{latestJobLabel}</Tag>
               </Space>
               <Progress percent={latestJob.progress} size="small" />
               <Text type="secondary">{latestJob.message}</Text>
@@ -77,4 +79,30 @@ export function WorkspaceHeader({ project, datasetLabel, latestJob, activeTab, o
       </div>
     </div>
   )
+}
+
+function humanizeJobStatus(job: Job) {
+  if (job.status === 'queued') return '等待执行'
+  if (job.status === 'completed' || job.status === 'success') return '分析完成'
+  if (job.status === 'failed') return '分析失败'
+  if (job.status === 'running') {
+    const runningLabels: Record<string, string> = {
+      import: '正在读取日志',
+      mapping: '正在识别字段',
+      preprocess: '正在整理数据',
+      preprocess_training_advisor: '正在分析训练影响',
+      feature: '正在生成异常分析特征',
+      training: '正在建立检测模型',
+      analysis: '正在生成异常分数',
+    }
+    return runningLabels[job.job_type] ?? '正在执行分析任务'
+  }
+  return job.status
+}
+
+function jobStatusColor(status: string) {
+  if (status === 'completed' || status === 'success') return 'green'
+  if (status === 'failed') return 'red'
+  if (status === 'queued') return 'gold'
+  return 'processing'
 }

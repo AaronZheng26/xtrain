@@ -7,6 +7,7 @@ import remarkGfm from 'remark-gfm'
 import { DetailPanel } from '../DetailPanel'
 import { StageLayout } from '../StageLayout'
 import { UnsupervisedResultCharts } from '../UnsupervisedResultCharts'
+import { InvestigationActions } from './InvestigationActions'
 import { buildPreviewColumns } from '../../lib/ui'
 import type { LlmProviderConfig, LlmProviderConfigPayload, ModelAnalysisRead, ModelLlmExplanationRead, ModelPreviewRead, ModelVersion, Project } from '../../types'
 
@@ -42,6 +43,7 @@ export function AnalysisTab(props: Props) {
   const [configForm] = Form.useForm<LlmProviderConfigPayload & { topK: number; apiKey: string }>()
   const [selectedSignal, setSelectedSignal] = useState<{ modelId: number; column: string; type: 'spike' | 'count' } | null>(null)
   const [selectedSignalSampleKey, setSelectedSignalSampleKey] = useState<string | null>(null)
+  const [selectedPreviewSampleKey, setSelectedPreviewSampleKey] = useState<string | null>(null)
   const signalSummaryColumns = [
     { title: '特征列', dataIndex: 'column', key: 'column', width: 220 },
     { title: '异常均值', dataIndex: 'anomaly_mean', key: 'anomaly_mean', render: renderMetricValue },
@@ -79,6 +81,12 @@ export function AnalysisTab(props: Props) {
     ?? (reportJson.feature_lineage_snapshot as Record<string, { source_columns?: string[]; task_category?: string; recipe_id?: string; business_meaning?: string }> | undefined)
     ?? {}
   const selectedSignalLineage = selectedSignalColumn ? featureLineageSnapshot[selectedSignalColumn] : null
+  const llmConfigured = Boolean(
+    props.llmConfig?.enabled
+    && props.llmConfig.base_url
+    && props.llmConfig.model_name
+    && (props.llmConfig.provider === 'ollama' || props.llmConfig.has_api_key),
+  )
 
   const signalSampleRows = useMemo<SignalSampleRow[]>(() => {
     if (!selectedSignalColumn || !props.preview?.rows?.length || !props.preview.columns.includes(selectedSignalColumn)) {
@@ -98,10 +106,22 @@ export function AnalysisTab(props: Props) {
       }))
   }, [props.preview, selectedSignalColumn])
 
+  const previewSampleRows = useMemo<SignalSampleRow[]>(() => {
+    return (props.preview?.rows ?? []).map((row, index) => ({
+      ...row,
+      __rowKey: buildSignalSampleKey(row, index),
+    }))
+  }, [props.preview])
+
   const selectedSignalSample = useMemo<SignalSampleRow | null>(() => {
     if (!selectedSignalSampleKey) return null
     return signalSampleRows.find((row) => String(row.__rowKey) === selectedSignalSampleKey) ?? null
   }, [selectedSignalSampleKey, signalSampleRows])
+
+  const selectedPreviewSample = useMemo<SignalSampleRow | null>(() => {
+    if (!selectedPreviewSampleKey) return null
+    return previewSampleRows.find((row) => String(row.__rowKey) === selectedPreviewSampleKey) ?? null
+  }, [previewSampleRows, selectedPreviewSampleKey])
 
   const selectedSignalSampleContext = useMemo(() => {
     if (!selectedSignalSample || !selectedSignalColumn) return []
@@ -112,6 +132,11 @@ export function AnalysisTab(props: Props) {
     if (!selectedSignalSample || !props.preview?.rows?.length) return []
     return buildSignalSampleMatches(props.preview.rows, selectedSignalSample, businessContextColumns)
   }, [businessContextColumns, props.preview, selectedSignalSample])
+
+  const selectedPreviewSampleMatches = useMemo(() => {
+    if (!selectedPreviewSample || !props.preview?.rows?.length) return []
+    return buildSignalSampleMatches(props.preview.rows, selectedPreviewSample, businessContextColumns)
+  }, [businessContextColumns, props.preview, selectedPreviewSample])
 
   const signalWindowDetail = useMemo(() => {
     if (!selectedSignalSample || !props.preview?.rows?.length || !selectedSignalColumn) {
@@ -449,6 +474,14 @@ export function AnalysisTab(props: Props) {
                               <Text type="secondary">当前还没有该特征的 lineage 快照，通常是旧模型或旧特征流水线生成的结果。</Text>
                             )}
                           </Card>
+                          <InvestigationActions
+                            sampleKey={String(selectedSignalSample.__rowKey)}
+                            sample={selectedSignalSample}
+                            similarMatches={selectedSignalSampleMatches}
+                            llmConfigured={llmConfigured}
+                            llmLoading={props.explainingWithLlm}
+                            onGenerateAdvice={() => props.onRunLlmExplanation(5)}
+                          />
                         </Space>
                       ) : (
                         <Text type="secondary">点击上方联动样本表中的某一行，这里会显示该样本的关键字段和在当前预览中的相似命中情况。</Text>
@@ -550,14 +583,30 @@ export function AnalysisTab(props: Props) {
                 )}
               </Card>
               <Table<Record<string, unknown>>
-                rowKey={(_, index) => String(index)}
+                rowKey={(record) => String(record.__rowKey)}
                 loading={props.previewLoading}
                 columns={buildPreviewColumns(predictionDisplayColumns)}
-                dataSource={props.preview?.rows ?? []}
+                dataSource={previewSampleRows}
                 pagination={{ pageSize: 5, hideOnSinglePage: true }}
                 scroll={{ x: 1000 }}
                 size="small"
+                onRow={(record) => ({
+                  onClick: () => setSelectedPreviewSampleKey(String(record.__rowKey)),
+                })}
+                rowClassName={(record) => String(record.__rowKey) === selectedPreviewSampleKey ? 'selectable-row is-selected' : 'selectable-row'}
               />
+              {selectedPreviewSample ? (
+                <InvestigationActions
+                  sampleKey={String(selectedPreviewSample.__rowKey)}
+                  sample={selectedPreviewSample}
+                  similarMatches={selectedPreviewSampleMatches}
+                  llmConfigured={llmConfigured}
+                  llmLoading={props.explainingWithLlm}
+                  onGenerateAdvice={() => props.onRunLlmExplanation(5)}
+                />
+              ) : (
+                <Text type="secondary">点击上方异常样本预览中的一行，可进行真实异常/误报/待确认标记。</Text>
+              )}
             </Space>
           ) : (
             <Empty description="选择一个模型后，这里会显示异常结果和 Ollama 分析入口。" />

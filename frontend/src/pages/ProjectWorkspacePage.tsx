@@ -1,20 +1,21 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react'
-import { Alert, Button, Form, Layout, Spin, Tabs, message } from 'antd'
+import { Suspense, lazy, useCallback, useEffect, useState } from 'react'
+import { Alert, Button, Layout, Space, Spin, Tabs, message } from 'antd'
 import type { UploadFile } from 'antd/es/upload/interface'
 import { LineChartOutlined } from '@ant-design/icons'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 
 import { WorkspaceHeader } from '../components/WorkspaceHeader'
+import { AnalysisGoalCard } from '../components/workspace/AnalysisGoalCard'
+import { DataReadinessCard } from '../components/workspace/DataReadinessCard'
+import { QuickAnalysisPanel } from '../components/workspace/QuickAnalysisPanel'
 import type { FeatureFormValues } from '../components/workspace/FeatureTab'
 import type { PreprocessFormValues } from '../components/workspace/PreprocessTab'
 import type { TrainingFormValues } from '../components/TrainingPanel'
-import { api } from '../lib/api'
+import { api, getDatasetReadiness } from '../lib/api'
 import { extractApiErrorMessage } from '../lib/errors'
+import { useWorkspaceData } from './useWorkspaceData'
+import { useWorkspaceJobs } from './useWorkspaceJobs'
 import type {
-  DatasetPreviewRead,
-  DatasetVersion,
-  DatasetWorkspaceRead,
-  FeaturePipeline,
   FeaturePreviewRead,
   FeatureStepPreviewRead,
   FeatureTemplate,
@@ -22,20 +23,18 @@ import type {
   FieldMapping,
   ImportSession,
   ImportSessionConfirmRead,
-  Job,
   JobSubmissionRead,
   LlmProviderConfig,
   LlmProviderConfigPayload,
   ModelAnalysisRead,
   ModelLlmExplanationRead,
   ModelPreviewRead,
-  ModelVersion,
-  PreprocessPipeline,
   PreprocessPreviewRead,
   PreprocessStepPreviewRead,
   PreprocessTrainingAdvisorRead,
   PreprocessTrainingAdvisorRunRead,
-  Project,
+  AnalysisGoalState,
+  DatasetReadiness,
   WorkspaceTabKey,
 } from '../types'
 
@@ -77,11 +76,10 @@ const stageLabels: Record<WorkspaceTabKey, string> = {
 const LLM_REQUEST_TIMEOUT_MS = 90000
 const IMPORT_REQUEST_TIMEOUT_MS = 120000
 
-type PendingWorkspaceJob = {
-  jobId: number
-  kind: 'preprocess' | 'feature' | 'training' | 'advisor'
-  resourceId: number
-  tab: WorkspaceTabKey
+const defaultAnalysisGoal: AnalysisGoalState = {
+  goal: 'web_access_anomaly',
+  logType: 'nginx_access',
+  mode: 'quick_unsupervised',
 }
 
 function normalizePreprocessSteps(steps: PreprocessFormValues['steps']) {
@@ -216,44 +214,34 @@ function inferTemplateLogType(parserProfile: string | undefined) {
 export function ProjectWorkspacePage() {
   const { projectId } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
-  const [mappingForm] = Form.useForm<Record<string, string | undefined>>()
   const [messageApi, contextHolder] = message.useMessage()
   const navigate = useNavigate()
   const resolvedProjectId = Number(projectId)
   const activeTab = (searchParams.get('tab') as WorkspaceTabKey | null) ?? 'data'
 
-  const [project, setProject] = useState<Project | null>(null)
-  const [jobs, setJobs] = useState<Job[]>([])
-  const [datasets, setDatasets] = useState<DatasetVersion[]>([])
-  const [selectedDatasetId, setSelectedDatasetId] = useState<number | null>(null)
-  const [selectedDataset, setSelectedDataset] = useState<DatasetVersion | null>(null)
-  const [datasetPreview, setDatasetPreview] = useState<DatasetPreviewRead | null>(null)
-  const [fieldMapping, setFieldMapping] = useState<FieldMapping | null>(null)
+  const [backendStatus, setBackendStatus] = useState<'unknown' | 'online' | 'offline'>('unknown')
+  const [loading, setLoading] = useState(true)
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [analysisGoal, setAnalysisGoal] = useState<AnalysisGoalState>(defaultAnalysisGoal)
+  const [readiness, setReadiness] = useState<DatasetReadiness | null>(null)
+  const [readinessLoading, setReadinessLoading] = useState(false)
+  const [readinessError, setReadinessError] = useState<string | null>(null)
+  const [workspaceMode, setWorkspaceMode] = useState<'guided' | 'expert'>('guided')
   const [importSession, setImportSession] = useState<ImportSession | null>(null)
-  const [pipelines, setPipelines] = useState<PreprocessPipeline[]>([])
   const [pipelinePreview, setPipelinePreview] = useState<PreprocessPreviewRead | null>(null)
   const [preprocessStepPreview, setPreprocessStepPreview] = useState<PreprocessStepPreviewRead | null>(null)
   const [preprocessAdvisor, setPreprocessAdvisor] = useState<PreprocessTrainingAdvisorRead | null>(null)
   const [sampledAdvisorRun, setSampledAdvisorRun] = useState<PreprocessTrainingAdvisorRunRead | null>(null)
   const [activeSampledAdvisorRunId, setActiveSampledAdvisorRunId] = useState<number | null>(null)
-  const [featurePipelines, setFeaturePipelines] = useState<FeaturePipeline[]>([])
   const [featurePreview, setFeaturePreview] = useState<FeaturePreviewRead | null>(null)
   const [featureTemplates, setFeatureTemplates] = useState<FeatureTemplate[]>([])
   const [featureHandoff, setFeatureHandoff] = useState<FeatureHandoff | null>(null)
   const [featureStepPreview, setFeatureStepPreview] = useState<FeatureStepPreviewRead | null>(null)
-  const [models, setModels] = useState<ModelVersion[]>([])
   const [modelPreview, setModelPreview] = useState<ModelPreviewRead | null>(null)
   const [modelAnalysis, setModelAnalysis] = useState<ModelAnalysisRead | null>(null)
   const [llmConfig, setLlmConfig] = useState<LlmProviderConfig | null>(null)
   const [llmExplanation, setLlmExplanation] = useState<ModelLlmExplanationRead | null>(null)
-  const [selectedPipelineId, setSelectedPipelineId] = useState<number | null>(null)
-  const [selectedFeaturePipelineId, setSelectedFeaturePipelineId] = useState<number | null>(null)
-  const [selectedModelId, setSelectedModelId] = useState<number | null>(null)
   const [fileList, setFileList] = useState<UploadFile[]>([])
-  const [backendStatus, setBackendStatus] = useState<'unknown' | 'online' | 'offline'>('unknown')
-  const [loading, setLoading] = useState(true)
-  const [datasetsLoading, setDatasetsLoading] = useState(false)
-  const [workspaceLoading, setWorkspaceLoading] = useState(false)
   const [pipelinePreviewLoading, setPipelinePreviewLoading] = useState(false)
   const [preprocessStepPreviewLoading, setPreprocessStepPreviewLoading] = useState(false)
   const [preprocessAdvisorLoading, setPreprocessAdvisorLoading] = useState(false)
@@ -278,99 +266,51 @@ export function ProjectWorkspacePage() {
   const [savingFeatureTemplate, setSavingFeatureTemplate] = useState(false)
   const [runningTraining, setRunningTraining] = useState(false)
   const [startingJob, setStartingJob] = useState(false)
-  const [errorMessage, setErrorMessage] = useState<string | null>(null)
-  const [pendingWorkspaceJobs, setPendingWorkspaceJobs] = useState<PendingWorkspaceJob[]>([])
 
-  const selectedPipeline = useMemo(() => pipelines.find((pipeline) => pipeline.id === selectedPipelineId) ?? null, [pipelines, selectedPipelineId])
-  const selectedFeaturePipeline = useMemo(() => featurePipelines.find((pipeline) => pipeline.id === selectedFeaturePipelineId) ?? null, [featurePipelines, selectedFeaturePipelineId])
-  const selectedModel = useMemo(() => models.find((model) => model.id === selectedModelId) ?? null, [models, selectedModelId])
-  const latestJob = jobs[0] ?? null
-  const hasPendingWorkspaceJobs = pendingWorkspaceJobs.length > 0
-  const datasetColumns = selectedDataset?.schema_snapshot.map((field) => field.name) ?? []
+  const {
+    project,
+    datasets,
+    selectedDatasetId,
+    selectedDataset,
+    datasetPreview,
+    fieldMapping,
+    pipelines,
+    featurePipelines,
+    models,
+    selectedPipelineId,
+    selectedFeaturePipelineId,
+    selectedModelId,
+    selectedPipeline,
+    selectedFeaturePipeline,
+    selectedModel,
+    datasetColumns,
+    datasetsLoading,
+    workspaceLoading,
+    loadProject,
+    loadDatasets,
+    loadDatasetWorkspace,
+    resetWorkspaceDataState,
+    clearSelectedDatasetWorkspace,
+    setSelectedDatasetId,
+    setFieldMapping,
+    setSelectedPipelineId,
+    setSelectedFeaturePipelineId,
+    setSelectedModelId,
+  } = useWorkspaceData({ setBackendStatus, setErrorMessage })
 
-  const resetWorkspaceState = useCallback(() => {
-    setDatasets([])
-    setSelectedDatasetId(null)
-    setSelectedDataset(null)
-    setDatasetPreview(null)
-    setFieldMapping(null)
-    setImportSession(null)
-    setPipelines([])
-    setPipelinePreview(null)
-    setPreprocessStepPreview(null)
-    setPreprocessAdvisor(null)
-    setSampledAdvisorRun(null)
-    setActiveSampledAdvisorRunId(null)
-    setPreprocessAdvisorLoading(false)
-    setSampledAdvisorLoading(false)
-    setFeaturePipelines([])
-    setFeaturePreview(null)
-    setFeatureTemplates([])
-    setFeatureHandoff(null)
-    setFeatureStepPreview(null)
-    setModels([])
-    setModelPreview(null)
-    setModelAnalysis(null)
-    setLlmConfig(null)
-    setLlmExplanation(null)
-    setSelectedPipelineId(null)
-    setSelectedFeaturePipelineId(null)
-    setSelectedModelId(null)
-    setFileList([])
-    mappingForm.resetFields()
-  }, [mappingForm])
-
-  const loadProject = useCallback(async (projectIdValue: number) => {
-    const response = await api.get<Project>(`/projects/${projectIdValue}`)
-    setProject(response.data)
-  }, [])
-
-  const loadJobs = useCallback(async () => {
-    const response = await api.get<Job[]>('/jobs')
-    setJobs(response.data)
-  }, [])
-
-  const loadDatasets = useCallback(async (projectIdValue: number, preferredDatasetId: number | null = null) => {
-    setDatasetsLoading(true)
+  const loadReadiness = useCallback(async (datasetId: number, goalState: AnalysisGoalState) => {
+    setReadinessLoading(true)
+    setReadinessError(null)
     try {
-      const response = await api.get<DatasetVersion[]>('/datasets', { params: { project_id: projectIdValue } })
-      setDatasets(response.data)
-      setSelectedDatasetId((current) => {
-        const desiredDatasetId = preferredDatasetId ?? current
-        return response.data.find((dataset) => dataset.id === desiredDatasetId)?.id ?? response.data[0]?.id ?? null
-      })
-      setErrorMessage(null)
+      const data = await getDatasetReadiness(datasetId, goalState)
+      setReadiness(data)
     } catch {
-      setBackendStatus('offline')
-      setErrorMessage('加载项目数据集失败。')
+      setReadiness(null)
+      setReadinessError('数据就绪度评估失败，请先确认数据文件和字段解析结果。')
     } finally {
-      setDatasetsLoading(false)
+      setReadinessLoading(false)
     }
   }, [])
-
-  const loadDatasetWorkspace = useCallback(async (datasetId: number) => {
-    setWorkspaceLoading(true)
-    try {
-      const response = await api.get<DatasetWorkspaceRead>(`/datasets/${datasetId}/workspace`, { params: { preview_limit: 12 } })
-      const workspace = response.data
-      setSelectedDataset(workspace.dataset)
-      setDatasetPreview(workspace.preview)
-      setFieldMapping(workspace.field_mapping)
-      setPipelines(workspace.preprocess_pipelines)
-      setFeaturePipelines(workspace.feature_pipelines)
-      setModels(workspace.models)
-      mappingForm.setFieldsValue(Object.fromEntries(Object.entries(workspace.field_mapping.mappings).map(([key, value]) => [key, value ?? undefined])))
-      setSelectedPipelineId((current) => workspace.preprocess_pipelines.find((item) => item.id === current)?.id ?? workspace.preprocess_pipelines[0]?.id ?? null)
-      setSelectedFeaturePipelineId((current) => workspace.feature_pipelines.find((item) => item.id === current)?.id ?? workspace.feature_pipelines[0]?.id ?? null)
-      setSelectedModelId((current) => workspace.models.find((item) => item.id === current)?.id ?? workspace.models[0]?.id ?? null)
-      setErrorMessage(null)
-    } catch {
-      setBackendStatus('offline')
-      setErrorMessage('加载数据集工作区失败。')
-    } finally {
-      setWorkspaceLoading(false)
-    }
-  }, [mappingForm])
 
   const loadPipelinePreview = useCallback(async (pipelineId: number) => {
     setPipelinePreviewLoading(true)
@@ -444,6 +384,62 @@ export function ProjectWorkspacePage() {
     }
   }, [])
 
+  const handleTabChange = useCallback((nextTab: string) => {
+    if (!(nextTab in stageLabels)) return
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current)
+      next.set('tab', nextTab)
+      return next
+    })
+  }, [setSearchParams])
+
+  const {
+    latestJob,
+    loadJobs,
+    addPendingWorkspaceJob,
+    clearWorkspaceJobs,
+  } = useWorkspaceJobs({
+    backendStatus,
+    selectedDatasetId,
+    activeSampledAdvisorRunId,
+    sampledAdvisorLoading,
+    messageApi,
+    loadDatasetWorkspace,
+    loadPreprocessAdvisorRun,
+    setSelectedPipelineId,
+    setSelectedFeaturePipelineId,
+    setSelectedModelId,
+    setSampledAdvisorLoading,
+    setActiveSampledAdvisorRunId,
+    setErrorMessage,
+    handleTabChange,
+  })
+
+  const resetWorkspaceState = useCallback(() => {
+    resetWorkspaceDataState()
+    setImportSession(null)
+    setPipelinePreview(null)
+    setPreprocessStepPreview(null)
+    setPreprocessAdvisor(null)
+    setSampledAdvisorRun(null)
+    setActiveSampledAdvisorRunId(null)
+    setPreprocessAdvisorLoading(false)
+    setSampledAdvisorLoading(false)
+    setFeaturePreview(null)
+    setFeatureTemplates([])
+    setFeatureHandoff(null)
+    setFeatureStepPreview(null)
+    setModelPreview(null)
+    setModelAnalysis(null)
+    setLlmConfig(null)
+    setLlmExplanation(null)
+    setReadiness(null)
+    setReadinessError(null)
+    setWorkspaceMode('guided')
+    setFileList([])
+    clearWorkspaceJobs()
+  }, [clearWorkspaceJobs, resetWorkspaceDataState])
+
   const loadWorkspaceShell = useCallback(async (projectIdValue: number) => {
     try {
       await Promise.all([loadProject(projectIdValue), loadJobs(), loadDatasets(projectIdValue)])
@@ -463,22 +459,22 @@ export function ProjectWorkspacePage() {
       return
     }
     resetWorkspaceState()
-    setProject(null)
     setLoading(true)
     void loadWorkspaceShell(resolvedProjectId)
   }, [loadWorkspaceShell, navigate, projectId, resetWorkspaceState, resolvedProjectId])
 
   useEffect(() => {
-    if (backendStatus !== 'online') return
-    const timer = window.setInterval(() => {
-      if (!document.hidden) void loadJobs()
-    }, hasPendingWorkspaceJobs ? 3000 : 10000)
-    return () => window.clearInterval(timer)
-  }, [backendStatus, hasPendingWorkspaceJobs, loadJobs])
-
-  useEffect(() => {
     if (backendStatus === 'online' && selectedDatasetId) void loadDatasetWorkspace(selectedDatasetId)
   }, [backendStatus, loadDatasetWorkspace, selectedDatasetId])
+
+  useEffect(() => {
+    if (backendStatus !== 'online' || !selectedDatasetId) {
+      setReadiness(null)
+      setReadinessError(null)
+      return
+    }
+    void loadReadiness(selectedDatasetId, analysisGoal)
+  }, [analysisGoal, backendStatus, loadReadiness, selectedDatasetId])
 
   useEffect(() => {
     if (backendStatus === 'online' && activeTab === 'preprocess' && selectedPipelineId && selectedPipeline?.status === 'completed' && selectedPipeline.output_path) {
@@ -496,62 +492,6 @@ export function ProjectWorkspacePage() {
     setPreprocessAdvisorLoading(false)
     setSampledAdvisorLoading(false)
   }, [selectedDatasetId])
-
-  useEffect(() => {
-    if (!activeSampledAdvisorRunId || !sampledAdvisorLoading || backendStatus !== 'online') {
-      return
-    }
-    const advisorRunId = activeSampledAdvisorRunId
-
-    let cancelled = false
-
-    async function pollAdvisorRun() {
-      try {
-        const run = await loadPreprocessAdvisorRun(advisorRunId)
-        if (cancelled) return
-
-        if (run.status === 'completed') {
-          setSampledAdvisorLoading(false)
-          setActiveSampledAdvisorRunId(null)
-          setPendingWorkspaceJobs((current) => current.filter((item) => item.resourceId !== advisorRunId))
-          await loadJobs()
-          messageApi.success('采样训练适配分析已完成。')
-          return
-        }
-
-        if (run.status === 'failed') {
-          setSampledAdvisorLoading(false)
-          setActiveSampledAdvisorRunId(null)
-          setPendingWorkspaceJobs((current) => current.filter((item) => item.resourceId !== advisorRunId))
-          await loadJobs()
-          const failureMessage = '采样训练适配分析执行失败，请检查后端日志。'
-          setErrorMessage(failureMessage)
-          messageApi.error(failureMessage)
-          return
-        }
-      } catch (error) {
-        if (cancelled) return
-        const failureMessage = extractApiErrorMessage(error, '加载采样训练适配分析状态失败。')
-        setSampledAdvisorLoading(false)
-        setActiveSampledAdvisorRunId(null)
-        setErrorMessage(failureMessage)
-        messageApi.error(failureMessage)
-        return
-      }
-
-      if (!cancelled) {
-        window.setTimeout(() => {
-          if (!cancelled) void pollAdvisorRun()
-        }, 2000)
-      }
-    }
-
-    void pollAdvisorRun()
-
-    return () => {
-      cancelled = true
-    }
-  }, [activeSampledAdvisorRunId, backendStatus, loadJobs, loadPreprocessAdvisorRun, messageApi, sampledAdvisorLoading])
 
   useEffect(() => {
     if (backendStatus === 'online' && activeTab === 'feature' && selectedFeaturePipelineId && selectedFeaturePipeline?.status === 'completed' && selectedFeaturePipeline.output_path) {
@@ -611,14 +551,6 @@ export function ProjectWorkspacePage() {
     }
   }, [backendStatus, project, activeTab, loadLlmConfig])
 
-  const handleTabChange = useCallback((nextTab: string) => {
-    setSearchParams((current) => {
-      const next = new URLSearchParams(current)
-      next.set('tab', nextTab)
-      return next
-    })
-  }, [setSearchParams])
-
   const handleFeatureHandoff = useCallback((handoff: FeatureHandoff) => {
     setFeatureHandoff(handoff)
     handleTabChange('feature')
@@ -630,77 +562,6 @@ export function ProjectWorkspacePage() {
     const sourceLabel = handoff.source_issue_group_title ? `来自「${handoff.source_issue_group_title}」的` : ''
     messageApi.success(`已带入${sourceLabel}${label}推荐方案，可在特征页确认后生成草稿。`)
   }, [handleTabChange, messageApi])
-
-  useEffect(() => {
-    if (!pendingWorkspaceJobs.length || !selectedDatasetId) {
-      return
-    }
-
-    const datasetId = selectedDatasetId
-    const settledJobs = pendingWorkspaceJobs
-      .map((pendingJob) => ({
-        ...pendingJob,
-        job: jobs.find((job) => job.id === pendingJob.jobId) ?? null,
-      }))
-      .filter((pendingJob) => pendingJob.job && (pendingJob.job.status === 'completed' || pendingJob.job.status === 'failed'))
-
-    if (!settledJobs.length) {
-      return
-    }
-
-    let cancelled = false
-
-    async function syncWorkspaceAfterJobs() {
-      setPendingWorkspaceJobs((current) => current.filter((pendingJob) => !settledJobs.some((settled) => settled.jobId === pendingJob.jobId)))
-      const needsWorkspaceRefresh = settledJobs.some((settled) => settled.kind !== 'advisor')
-      if (needsWorkspaceRefresh) {
-        await Promise.all([loadDatasetWorkspace(datasetId), loadJobs()])
-      } else {
-        await loadJobs()
-      }
-      if (cancelled) return
-
-      for (const settled of settledJobs) {
-        if (!settled.job) continue
-        if (settled.kind === 'preprocess') {
-          setSelectedPipelineId(settled.resourceId)
-        } else if (settled.kind === 'feature') {
-          setSelectedFeaturePipelineId(settled.resourceId)
-        } else if (settled.kind === 'training') {
-          setSelectedModelId(settled.resourceId)
-        } else if (settled.kind === 'advisor') {
-          setSampledAdvisorLoading(false)
-          setActiveSampledAdvisorRunId(null)
-          if (settled.job.status === 'completed') {
-            try {
-              await loadPreprocessAdvisorRun(settled.resourceId)
-            } catch (error) {
-              const failureMessage = extractApiErrorMessage(error, '加载采样训练适配分析结果失败。')
-              setErrorMessage(failureMessage)
-              messageApi.error(failureMessage)
-              continue
-            }
-          }
-        }
-
-        handleTabChange(settled.tab)
-
-        if (settled.job.status === 'completed') {
-          messageApi.success(settled.job.message || '后台任务已完成。')
-        } else {
-          const failureMessage = settled.job.message || '后台任务执行失败，请检查后端日志。'
-          setErrorMessage(failureMessage)
-          messageApi.error(failureMessage)
-        }
-      }
-    }
-
-    void syncWorkspaceAfterJobs()
-
-    return () => {
-      cancelled = true
-    }
-  }, [handleTabChange, jobs, loadDatasetWorkspace, loadJobs, loadPreprocessAdvisorRun, messageApi, pendingWorkspaceJobs, selectedDatasetId])
 
   async function handleCreateImportSession() {
     if (!project) return
@@ -784,11 +645,10 @@ export function ProjectWorkspacePage() {
     }
   }
 
-  async function handleSaveFieldMapping() {
+  async function handleSaveFieldMapping(values: Record<string, string | undefined>) {
     if (!selectedDatasetId) return
     setSavingMapping(true)
     try {
-      const values = mappingForm.getFieldsValue()
       const payload = { mappings: { event_time: values.event_time || null, source_ip: values.source_ip || null, dest_ip: values.dest_ip || null, status_code: values.status_code || null, label: values.label || null, raw_message: values.raw_message || null } }
       const response = await api.put<FieldMapping>(`/datasets/${selectedDatasetId}/field-mapping`, payload)
       setFieldMapping(response.data)
@@ -821,16 +681,7 @@ export function ProjectWorkspacePage() {
       await api.delete(`/datasets/${datasetId}`)
       if (selectedDatasetId === datasetId) {
         setFeatureHandoff(null)
-        setSelectedDatasetId(null)
-        setSelectedDataset(null)
-        setDatasetPreview(null)
-        setFieldMapping(null)
-        setPipelines([])
-        setFeaturePipelines([])
-        setModels([])
-        setSelectedPipelineId(null)
-        setSelectedFeaturePipelineId(null)
-        setSelectedModelId(null)
+        clearSelectedDatasetWorkspace()
         setPipelinePreview(null)
         setFeaturePreview(null)
         setModelPreview(null)
@@ -854,7 +705,7 @@ export function ProjectWorkspacePage() {
       const response = await api.post<JobSubmissionRead>('/pipelines/preprocess', { project_id: project.id, dataset_version_id: selectedDatasetId, name: values.name, steps })
       await Promise.all([loadDatasetWorkspace(selectedDatasetId), loadJobs()])
       setSelectedPipelineId(response.data.resource_id)
-      setPendingWorkspaceJobs((current) => [...current, { jobId: response.data.job.id, kind: 'preprocess', resourceId: response.data.resource_id, tab: 'preprocess' }])
+      addPendingWorkspaceJob({ jobId: response.data.job.id, kind: 'preprocess', resourceId: response.data.resource_id, tab: 'preprocess' })
       handleTabChange('preprocess')
       messageApi.success('预处理任务已提交，完成后会自动刷新结果。')
     } catch (error) {
@@ -918,12 +769,12 @@ export function ProjectWorkspacePage() {
         sample_limit: 2000,
       })
       setActiveSampledAdvisorRunId(response.data.resource_id)
-      setPendingWorkspaceJobs((current) => [...current, {
+      addPendingWorkspaceJob({
         jobId: response.data.job.id,
         kind: 'advisor',
         resourceId: response.data.resource_id,
         tab: 'preprocess',
-      }])
+      })
       handleTabChange('preprocess')
       messageApi.success('采样训练适配分析已提交，完成后会自动刷新结果。')
     } catch (error) {
@@ -949,7 +800,7 @@ export function ProjectWorkspacePage() {
       await loadDatasetWorkspace(selectedDatasetId)
       setSelectedFeaturePipelineId(response.data.resource_id)
       setFeatureHandoff(null)
-      setPendingWorkspaceJobs((current) => [...current, { jobId: response.data.job.id, kind: 'feature', resourceId: response.data.resource_id, tab: 'feature' }])
+      addPendingWorkspaceJob({ jobId: response.data.job.id, kind: 'feature', resourceId: response.data.resource_id, tab: 'feature' })
       handleTabChange('feature')
       messageApi.success('特征工程任务已提交，完成后会自动刷新结果。')
     } catch (error) {
@@ -1035,7 +886,7 @@ export function ProjectWorkspacePage() {
       })
       await Promise.all([loadDatasetWorkspace(selectedDatasetId), loadJobs()])
       setSelectedModelId(response.data.resource_id)
-      setPendingWorkspaceJobs((current) => [...current, { jobId: response.data.job.id, kind: 'training', resourceId: response.data.resource_id, tab: 'training' }])
+      addPendingWorkspaceJob({ jobId: response.data.job.id, kind: 'training', resourceId: response.data.resource_id, tab: 'training' })
       handleTabChange('training')
       messageApi.success(
         values.featurePipelineId && !values.featureColumns?.length
@@ -1115,6 +966,28 @@ export function ProjectWorkspacePage() {
     }
   }
 
+  function handleQuickAnalysisEntry() {
+    setWorkspaceMode('guided')
+    if (!selectedDatasetId) {
+      messageApi.info('请先导入或选择一个可分析数据版本。')
+      handleTabChange('data')
+      return
+    }
+    if (readiness && readiness.score < 40) {
+      messageApi.warning('当前数据就绪度偏低，建议先做字段映射或数据整理。')
+      handleTabChange('preprocess')
+      return
+    }
+    messageApi.success('已进入推荐路径：先确认特征，再建立检测模型。')
+    handleTabChange(readiness?.recommended_templates.length ? 'feature' : 'preprocess')
+  }
+
+  function handleExpertModeEntry() {
+    setWorkspaceMode('expert')
+    messageApi.info('已切换到专家模式，保留完整字段映射、数据整理、特征工程和训练流程。')
+    handleTabChange('data')
+  }
+
   if (loading) return <div className="loading-state"><Spin size="large" /></div>
 
   return (
@@ -1131,6 +1004,34 @@ export function ProjectWorkspacePage() {
           onDeleteProject={() => void handleDeleteProject()}
           deletingProject={deletingProject}
         />
+        <Space direction="vertical" size={16} className="full-width workspace-guided-stack">
+          <AnalysisGoalCard value={analysisGoal} onChange={setAnalysisGoal} />
+          <DataReadinessCard
+            readiness={readiness}
+            loading={readinessLoading}
+            errorMessage={readinessError}
+            onQuickAnalysis={handleQuickAnalysisEntry}
+            onExpertMode={handleExpertModeEntry}
+          />
+          {selectedDatasetId && readiness && workspaceMode === 'guided' ? (
+            <QuickAnalysisPanel
+              goalState={analysisGoal}
+              readiness={readiness}
+              onOpenData={() => handleTabChange('data')}
+              onOpenFeature={() => handleTabChange('feature')}
+              onOpenTraining={() => handleTabChange('training')}
+              onOpenAnalysis={() => handleTabChange('analysis')}
+            />
+          ) : null}
+          {workspaceMode === 'expert' ? (
+            <Alert
+              type="info"
+              showIcon
+              message="专家模式已开启"
+              description="下面仍保留原有字段映射、数据整理、异常分析特征、建立检测模型和异常研判页签。"
+            />
+          ) : null}
+        </Space>
         <Tabs
           className="workspace-tabs"
           activeKey={activeTab}
@@ -1142,7 +1043,7 @@ export function ProjectWorkspacePage() {
               label: stageLabels.data,
               children: activeTab === 'data' ? (
                 <Suspense fallback={<div className="loading-state"><Spin /></div>}>
-                  <DataTab project={project} datasets={datasets} selectedDatasetId={selectedDatasetId} selectedDataset={selectedDataset} datasetPreview={datasetPreview} fileList={fileList} datasetsLoading={datasetsLoading} previewLoading={workspaceLoading} fieldMapping={fieldMapping} importSession={importSession} mappingLoading={workspaceLoading} savingMapping={savingMapping} creatingImportSession={creatingImportSession} applyingImportCleaning={applyingImportCleaning} confirmingImportSession={confirmingImportSession} deletingDatasetId={deletingDatasetId} mappingForm={mappingForm} onSelectDataset={setSelectedDatasetId} onFileListChange={setFileList} onCreateImportSession={() => void handleCreateImportSession()} onConfirmImportSession={() => void handleConfirmImportSession()} onSelectImportTemplate={(templateId) => void handleSelectImportTemplate(templateId)} onApplyImportCleaning={(options) => void handleApplyImportCleaning(options)} onSaveFieldMapping={() => void handleSaveFieldMapping()} onDeleteDataset={(datasetId) => void handleDeleteDataset(datasetId)} />
+                  <DataTab project={project} datasets={datasets} selectedDatasetId={selectedDatasetId} selectedDataset={selectedDataset} datasetPreview={datasetPreview} fileList={fileList} datasetsLoading={datasetsLoading} previewLoading={workspaceLoading} fieldMapping={fieldMapping} importSession={importSession} mappingLoading={workspaceLoading} savingMapping={savingMapping} creatingImportSession={creatingImportSession} applyingImportCleaning={applyingImportCleaning} confirmingImportSession={confirmingImportSession} deletingDatasetId={deletingDatasetId} onSelectDataset={setSelectedDatasetId} onFileListChange={setFileList} onCreateImportSession={() => void handleCreateImportSession()} onConfirmImportSession={() => void handleConfirmImportSession()} onSelectImportTemplate={(templateId) => void handleSelectImportTemplate(templateId)} onApplyImportCleaning={(options) => void handleApplyImportCleaning(options)} onSaveFieldMapping={(values) => void handleSaveFieldMapping(values)} onDeleteDataset={(datasetId) => void handleDeleteDataset(datasetId)} />
                 </Suspense>
               ) : null,
             },

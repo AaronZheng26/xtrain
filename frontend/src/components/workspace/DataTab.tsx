@@ -1,6 +1,5 @@
 import { useState } from 'react'
 import { Alert, Button, Card, Col, Descriptions, Empty, Input, List, Popconfirm, Row, Select, Space, Table, Tag, Typography, Upload } from 'antd'
-import type { FormInstance } from 'antd'
 import type { UploadFile } from 'antd/es/upload/interface'
 import { CloudUploadOutlined, DatabaseOutlined, FileSearchOutlined } from '@ant-design/icons'
 
@@ -29,14 +28,13 @@ type Props = {
   applyingImportCleaning: boolean
   confirmingImportSession: boolean
   deletingDatasetId: number | null
-  mappingForm: FormInstance<Record<string, string | undefined>>
   onSelectDataset: (datasetId: number) => void
   onFileListChange: (files: UploadFile[]) => void
   onCreateImportSession: () => void
   onConfirmImportSession: () => void
   onSelectImportTemplate: (templateId: string) => void
   onApplyImportCleaning: (options: { include_columns?: string[]; exclude_columns?: string[]; rename_columns?: Record<string, string> }) => void
-  onSaveFieldMapping: () => void
+  onSaveFieldMapping: (values: Record<string, string | undefined>) => void
   onDeleteDataset: (datasetId: number) => void
 }
 
@@ -180,7 +178,6 @@ export function DataTab(props: Props) {
             loading={props.mappingLoading}
             saving={props.savingMapping}
             columns={datasetColumns}
-            form={props.mappingForm}
             onSave={props.onSaveFieldMapping}
           />
         </Space>
