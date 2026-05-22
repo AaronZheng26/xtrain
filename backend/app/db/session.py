@@ -1,12 +1,13 @@
 from collections.abc import Generator
 from pathlib import Path
 
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import NullPool
 
 from app.core.config import get_settings
 from app.db.base import Base
+from app.db.migrations import run_sqlite_migrations
 
 
 settings = get_settings()
@@ -30,31 +31,11 @@ def initialize_database() -> None:
     import app.models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
-    _ensure_feature_pipeline_columns()
+    run_sqlite_migrations(engine)
 
 
 def _ensure_feature_pipeline_columns() -> None:
-    inspector = inspect(engine)
-    if "feature_pipelines" not in inspector.get_table_names():
-        return
-
-    existing_columns = {column["name"] for column in inspector.get_columns("feature_pipelines")}
-    alter_statements: list[str] = []
-    if "training_candidate_columns" not in existing_columns:
-        alter_statements.append("ALTER TABLE feature_pipelines ADD COLUMN training_candidate_columns JSON NOT NULL DEFAULT '[]'")
-    if "business_context_columns" not in existing_columns:
-        alter_statements.append("ALTER TABLE feature_pipelines ADD COLUMN business_context_columns JSON NOT NULL DEFAULT '[]'")
-    if "analysis_retained_columns" not in existing_columns:
-        alter_statements.append("ALTER TABLE feature_pipelines ADD COLUMN analysis_retained_columns JSON NOT NULL DEFAULT '[]'")
-    if "feature_lineage" not in existing_columns:
-        alter_statements.append("ALTER TABLE feature_pipelines ADD COLUMN feature_lineage JSON NOT NULL DEFAULT '{}'")
-
-    if not alter_statements:
-        return
-
-    with engine.begin() as connection:
-        for statement in alter_statements:
-            connection.execute(text(statement))
+    run_sqlite_migrations(engine)
 
 
 # Some call paths (for example direct TestClient usage without lifespan startup)

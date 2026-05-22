@@ -13,6 +13,7 @@ from app.services.training import (
     _calculate_stratified_sample_targets,
     _sample_unsupervised_frame,
     _select_training_feature_columns,
+    _train_model,
 )
 from app.models.feature_pipeline import FeaturePipeline
 
@@ -243,6 +244,67 @@ class TrainingFeatureSelectionTests(unittest.TestCase):
                 "sample_index",
             ],
         )
+
+    def test_feature_pipeline_training_preserves_business_context_and_lineage(self):
+        frame = pd.DataFrame(
+            {
+                "event_time": [f"2026-04-01 00:0{index}:00" for index in range(6)],
+                "session_id": [f"session-{index}" for index in range(6)],
+                "raw_message": ["ok", "timeout", "relay denied", "auth failed", "ok", "spam reject"],
+                "raw_message_entropy": [1.0, 2.1, 3.2, 2.9, 1.2, 3.8],
+                "source_ip_15m_count": [1, 2, 8, 7, 1, 9],
+            }
+        )
+        feature_pipeline = FeaturePipeline(
+            project_id=1,
+            dataset_version_id=1,
+            name="feature-training",
+            steps=[],
+            output_schema=[{"name": column} for column in frame.columns],
+            training_candidate_columns=["raw_message_entropy", "source_ip_15m_count"],
+            business_context_columns=["event_time", "session_id", "raw_message"],
+            analysis_retained_columns=[],
+            feature_lineage={
+                "source_ip_15m_count": {
+                    "source_columns": ["session_id", "event_time"],
+                    "step_type": "time_window_count",
+                    "task_category": "behavior_tracking",
+                    "recipe_id": "behavior_tracking_window",
+                    "description": "time_window_count 基于 session_id,event_time 生成",
+                    "business_meaning": "同一会话在 15 分钟窗口内的事件数",
+                    "used_for_training": True,
+                }
+            },
+        )
+        payload = TrainingRequest(
+            project_id=1,
+            dataset_version_id=1,
+            name="business-context-training",
+            mode="unsupervised",
+            algorithm="isolation_forest",
+            training_params={"contamination": 0.2},
+        )
+
+        trained = _train_model(
+            frame,
+            dataset_label_column=None,
+            payload=payload,
+            dataset_schema_columns=["event_time", "session_id", "raw_message"],
+            preprocess_pipeline=None,
+            feature_pipeline=feature_pipeline,
+        )
+
+        prediction_columns = list(trained["prediction_frame"].columns)
+        self.assertIn("event_time", prediction_columns)
+        self.assertIn("session_id", prediction_columns)
+        self.assertIn("raw_message", prediction_columns)
+        self.assertIn("source_row_id", prediction_columns)
+        self.assertEqual(trained["feature_columns"], ["raw_message_entropy", "source_ip_15m_count"])
+        self.assertEqual(
+            trained["report_json"]["business_context_columns"],
+            ["event_time", "session_id", "raw_message"],
+        )
+        self.assertIn("source_ip_15m_count", trained["report_json"]["feature_lineage_snapshot"])
 
     def test_signal_summaries_highlight_spike_and_count_features(self):
         frame = pd.DataFrame(

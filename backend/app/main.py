@@ -18,6 +18,7 @@ async def lifespan(app: FastAPI):
     seed_demo_data()
     with SessionLocal() as db:
         garbage_collect_artifact_files(db)
+    job_manager.recover_interrupted_jobs()
     job_manager.start()
     yield
     job_manager.shutdown()

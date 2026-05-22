@@ -365,6 +365,21 @@
   height: 260px;
 }
 
+.svg-chart {
+  display: block;
+}
+
+.svg-chart-label {
+  fill: #5b6b82;
+  font-size: 11px;
+}
+
+.status-trend-chart {
+  display: block;
+  width: 100%;
+  height: 240px;
+}
+
 .chart-canvas-tall {
   height: 320px;
 }

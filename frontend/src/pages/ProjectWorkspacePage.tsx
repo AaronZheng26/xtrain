@@ -1,14 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react'
 import { Alert, Button, Form, Layout, Spin, Tabs, message } from 'antd'
 import type { UploadFile } from 'antd/es/upload/interface'
 import { LineChartOutlined } from '@ant-design/icons'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 
-import { AnalysisTab } from '../components/workspace/AnalysisTab'
-import { DataTab } from '../components/workspace/DataTab'
-import { FeatureTab } from '../components/workspace/FeatureTab'
-import { PreprocessTab } from '../components/workspace/PreprocessTab'
-import { TrainingTab } from '../components/workspace/TrainingTab'
 import { WorkspaceHeader } from '../components/WorkspaceHeader'
 import type { FeatureFormValues } from '../components/workspace/FeatureTab'
 import type { PreprocessFormValues } from '../components/workspace/PreprocessTab'
@@ -45,6 +40,31 @@ import type {
 } from '../types'
 
 const { Content } = Layout
+
+const DataTab = lazy(async () => {
+  const module = await import('../components/workspace/DataTab')
+  return { default: module.DataTab }
+})
+
+const PreprocessTab = lazy(async () => {
+  const module = await import('../components/workspace/PreprocessTab')
+  return { default: module.PreprocessTab }
+})
+
+const FeatureTab = lazy(async () => {
+  const module = await import('../components/workspace/FeatureTab')
+  return { default: module.FeatureTab }
+})
+
+const TrainingTab = lazy(async () => {
+  const module = await import('../components/workspace/TrainingTab')
+  return { default: module.TrainingTab }
+})
+
+const AnalysisTab = lazy(async () => {
+  const module = await import('../components/workspace/AnalysisTab')
+  return { default: module.AnalysisTab }
+})
 
 const stageLabels: Record<WorkspaceTabKey, string> = {
   data: '数据',
@@ -1115,12 +1135,53 @@ export function ProjectWorkspacePage() {
           className="workspace-tabs"
           activeKey={activeTab}
           onChange={handleTabChange}
+          destroyOnHidden
           items={[
-            { key: 'data', label: stageLabels.data, children: <DataTab project={project} datasets={datasets} selectedDatasetId={selectedDatasetId} selectedDataset={selectedDataset} datasetPreview={datasetPreview} fileList={fileList} datasetsLoading={datasetsLoading} previewLoading={workspaceLoading} fieldMapping={fieldMapping} importSession={importSession} mappingLoading={workspaceLoading} savingMapping={savingMapping} creatingImportSession={creatingImportSession} applyingImportCleaning={applyingImportCleaning} confirmingImportSession={confirmingImportSession} deletingDatasetId={deletingDatasetId} mappingForm={mappingForm} onSelectDataset={setSelectedDatasetId} onFileListChange={setFileList} onCreateImportSession={() => void handleCreateImportSession()} onConfirmImportSession={() => void handleConfirmImportSession()} onSelectImportTemplate={(templateId) => void handleSelectImportTemplate(templateId)} onApplyImportCleaning={(options) => void handleApplyImportCleaning(options)} onSaveFieldMapping={() => void handleSaveFieldMapping()} onDeleteDataset={(datasetId) => void handleDeleteDataset(datasetId)} /> },
-            { key: 'preprocess', label: stageLabels.preprocess, children: <PreprocessTab dataset={selectedDataset} columns={datasetColumns} pipelines={pipelines} selectedPipelineId={selectedPipelineId} selectedPipeline={selectedPipeline} preview={pipelinePreview} stepPreview={preprocessStepPreview} stepPreviewLoading={preprocessStepPreviewLoading} listLoading={workspaceLoading} previewLoading={pipelinePreviewLoading} running={runningPreprocess} advisor={preprocessAdvisor} advisorLoading={preprocessAdvisorLoading} sampledAdvisorRun={sampledAdvisorRun} sampledAdvisorLoading={sampledAdvisorLoading} onRun={(values) => void handleRunPreprocess(values)} onPreviewStep={(index, values) => void handlePreviewPreprocessStep(index, values)} onAnalyzeAdvisor={handleAnalyzePreprocessAdvisor} onRunSampledAdvisor={handleRunSampledPreprocessAdvisor} onFeatureHandoff={handleFeatureHandoff} onSelectPipeline={setSelectedPipelineId} /> },
-            { key: 'feature', label: stageLabels.feature, children: <FeatureTab projectId={project?.id ?? null} dataset={selectedDataset} preprocessPipelines={pipelines} pipelines={featurePipelines} templates={featureTemplates} templatesLoading={featureTemplatesLoading} selectedPipelineId={selectedFeaturePipelineId} selectedPipeline={selectedFeaturePipeline} preview={featurePreview} stepPreview={featureStepPreview} listLoading={workspaceLoading} previewLoading={featurePreviewLoading} stepPreviewLoading={featureStepPreviewLoading} running={runningFeaturePipeline} savingTemplate={savingFeatureTemplate} featureHandoff={featureHandoff} onClearFeatureHandoff={() => setFeatureHandoff(null)} onRun={(values) => void handleRunFeaturePipeline(values)} onPreviewStep={(index, values) => void handlePreviewFeatureStep(index, values)} onSaveTemplate={(values) => void handleSaveFeatureTemplate(values)} onSelectPipeline={setSelectedFeaturePipelineId} /> },
-            { key: 'training', label: stageLabels.training, children: <TrainingTab dataset={selectedDataset} columns={datasetColumns} featurePipelines={featurePipelines} preprocessPipelines={pipelines} models={models} selectedModelId={selectedModelId} selectedModel={selectedModel} preview={modelPreview} analysis={modelAnalysis} listLoading={workspaceLoading} previewLoading={modelPreviewLoading} analysisLoading={modelAnalysisLoading} running={runningTraining} onRun={(values) => void handleRunTraining(values)} onSelectModel={setSelectedModelId} /> },
-            { key: 'analysis', label: stageLabels.analysis, children: <AnalysisTab project={project} models={models} selectedModelId={selectedModelId} selectedModel={selectedModel} preview={modelPreview} analysis={modelAnalysis} llmConfig={llmConfig} llmExplanation={llmExplanation} listLoading={workspaceLoading} previewLoading={modelPreviewLoading} analysisLoading={modelAnalysisLoading} llmConfigLoading={llmConfigLoading} savingLlmConfig={savingLlmConfig} testingLlmConfig={testingLlmConfig} explainingWithLlm={explainingWithLlm} onSelectModel={setSelectedModelId} onSaveLlmConfig={(values) => void handleSaveLlmConfig(values)} onTestLlmConfig={(values) => void handleTestLlmConfig(values)} onRunLlmExplanation={(topK) => void handleRunLlmExplanation(topK)} /> },
+            {
+              key: 'data',
+              label: stageLabels.data,
+              children: activeTab === 'data' ? (
+                <Suspense fallback={<div className="loading-state"><Spin /></div>}>
+                  <DataTab project={project} datasets={datasets} selectedDatasetId={selectedDatasetId} selectedDataset={selectedDataset} datasetPreview={datasetPreview} fileList={fileList} datasetsLoading={datasetsLoading} previewLoading={workspaceLoading} fieldMapping={fieldMapping} importSession={importSession} mappingLoading={workspaceLoading} savingMapping={savingMapping} creatingImportSession={creatingImportSession} applyingImportCleaning={applyingImportCleaning} confirmingImportSession={confirmingImportSession} deletingDatasetId={deletingDatasetId} mappingForm={mappingForm} onSelectDataset={setSelectedDatasetId} onFileListChange={setFileList} onCreateImportSession={() => void handleCreateImportSession()} onConfirmImportSession={() => void handleConfirmImportSession()} onSelectImportTemplate={(templateId) => void handleSelectImportTemplate(templateId)} onApplyImportCleaning={(options) => void handleApplyImportCleaning(options)} onSaveFieldMapping={() => void handleSaveFieldMapping()} onDeleteDataset={(datasetId) => void handleDeleteDataset(datasetId)} />
+                </Suspense>
+              ) : null,
+            },
+            {
+              key: 'preprocess',
+              label: stageLabels.preprocess,
+              children: activeTab === 'preprocess' ? (
+                <Suspense fallback={<div className="loading-state"><Spin /></div>}>
+                  <PreprocessTab dataset={selectedDataset} columns={datasetColumns} pipelines={pipelines} selectedPipelineId={selectedPipelineId} selectedPipeline={selectedPipeline} preview={pipelinePreview} stepPreview={preprocessStepPreview} stepPreviewLoading={preprocessStepPreviewLoading} listLoading={workspaceLoading} previewLoading={pipelinePreviewLoading} running={runningPreprocess} advisor={preprocessAdvisor} advisorLoading={preprocessAdvisorLoading} sampledAdvisorRun={sampledAdvisorRun} sampledAdvisorLoading={sampledAdvisorLoading} onRun={(values) => void handleRunPreprocess(values)} onPreviewStep={(index, values) => void handlePreviewPreprocessStep(index, values)} onAnalyzeAdvisor={handleAnalyzePreprocessAdvisor} onRunSampledAdvisor={handleRunSampledPreprocessAdvisor} onFeatureHandoff={handleFeatureHandoff} onSelectPipeline={setSelectedPipelineId} />
+                </Suspense>
+              ) : null,
+            },
+            {
+              key: 'feature',
+              label: stageLabels.feature,
+              children: activeTab === 'feature' ? (
+                <Suspense fallback={<div className="loading-state"><Spin /></div>}>
+                  <FeatureTab projectId={project?.id ?? null} dataset={selectedDataset} preprocessPipelines={pipelines} pipelines={featurePipelines} templates={featureTemplates} templatesLoading={featureTemplatesLoading} selectedPipelineId={selectedFeaturePipelineId} selectedPipeline={selectedFeaturePipeline} preview={featurePreview} stepPreview={featureStepPreview} listLoading={workspaceLoading} previewLoading={featurePreviewLoading} stepPreviewLoading={featureStepPreviewLoading} running={runningFeaturePipeline} savingTemplate={savingFeatureTemplate} featureHandoff={featureHandoff} onClearFeatureHandoff={() => setFeatureHandoff(null)} onRun={(values) => void handleRunFeaturePipeline(values)} onPreviewStep={(index, values) => void handlePreviewFeatureStep(index, values)} onSaveTemplate={(values) => void handleSaveFeatureTemplate(values)} onSelectPipeline={setSelectedFeaturePipelineId} />
+                </Suspense>
+              ) : null,
+            },
+            {
+              key: 'training',
+              label: stageLabels.training,
+              children: activeTab === 'training' ? (
+                <Suspense fallback={<div className="loading-state"><Spin /></div>}>
+                  <TrainingTab dataset={selectedDataset} columns={datasetColumns} featurePipelines={featurePipelines} preprocessPipelines={pipelines} models={models} selectedModelId={selectedModelId} selectedModel={selectedModel} preview={modelPreview} analysis={modelAnalysis} listLoading={workspaceLoading} previewLoading={modelPreviewLoading} analysisLoading={modelAnalysisLoading} running={runningTraining} onRun={(values) => void handleRunTraining(values)} onSelectModel={setSelectedModelId} />
+                </Suspense>
+              ) : null,
+            },
+            {
+              key: 'analysis',
+              label: stageLabels.analysis,
+              children: activeTab === 'analysis' ? (
+                <Suspense fallback={<div className="loading-state"><Spin /></div>}>
+                  <AnalysisTab project={project} models={models} selectedModelId={selectedModelId} selectedModel={selectedModel} preview={modelPreview} analysis={modelAnalysis} llmConfig={llmConfig} llmExplanation={llmExplanation} listLoading={workspaceLoading} previewLoading={modelPreviewLoading} analysisLoading={modelAnalysisLoading} llmConfigLoading={llmConfigLoading} savingLlmConfig={savingLlmConfig} testingLlmConfig={testingLlmConfig} explainingWithLlm={explainingWithLlm} onSelectModel={setSelectedModelId} onSaveLlmConfig={(values) => void handleSaveLlmConfig(values)} onTestLlmConfig={(values) => void handleTestLlmConfig(values)} onRunLlmExplanation={(topK) => void handleRunLlmExplanation(topK)} />
+                </Suspense>
+              ) : null,
+            },
           ]}
         />
         <div className="floating-action">
